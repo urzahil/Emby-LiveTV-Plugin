@@ -18,7 +18,7 @@ Target: Emby Server **4.8.x** (SDK NuGet `mediabrowser.server.core` 4.8.11,
 | Guide data (EPG) for those channels without a separate listings provider | `BaseTunerHost.SupportsGuideData` + `GetProgramsInternal` | Same mechanism Emby's own M3U tuner uses for `url-tvg`. |
 | Catch-up / archive playback | `MediaBrowser.Controller.Channels.IChannel` + `IRequiresMediaInfoCallback` | Emby's Live TV API has **no catch-up concept at all** (verified: no catchup/timeshift anywhere in the 4.8 SDK or the bundled M3U tuner). Past guide entries are not playable. The only first-class way to offer "play this programme from yesterday" is a Channel plugin: a virtual folder tree whose leaf items are playable URLs. |
 | Setup UI for credentials | `IHasWebPages` embedded HTML/JS pages | The generic `livetvtuner.html` hides every field for unknown tuner types, so a custom page is **required**. |
-| Helper REST endpoints used by the setup page | `MediaBrowser.Model.Services.IService` | `/Xtream/Test`, `/Xtream/Categories`. |
+| Helper REST endpoints used by the setup page | `MediaBrowser.Model.Services.IService` | `POST /Xtream/Test`, `POST /Xtream/Categories` (JSON body, so credentials stay out of request-log URLs). |
 
 ### Key facts about `BaseTunerHost` (decompiled from 4.8.11)
 
@@ -110,7 +110,7 @@ src/Emby.Xtream/
     XtreamCatchupChannel.cs       : IChannel, IRequiresMediaInfoCallback, IHasCacheKey, IHasChannelFeatures
     CatchupItemId.cs              encode/decode folder & item ids
   Api/
-    XtreamService.cs              : IService  — GET /Xtream/Test, GET /Xtream/Categories (Admin only)
+    XtreamService.cs              : IService  — POST /Xtream/Test, POST /Xtream/Categories (JSON body, Admin only)
   Web/
     xtreamtuner.html / xtreamtuner.js      tuner setup page (add + edit)
     config.html / config.js                plugin main config page (global defaults, help)
@@ -171,7 +171,7 @@ leaf  ...|p|{startTs}|{stopTs}|{urlsafe-title}  -> ChannelItemInfo{Type=Media, M
 
 ## 6. Setup page (`xtreamtuner.html/js`)
 
-Fields: Friendly name · Server URL (accepts a full `get.php` M3U URL and splits it) · Username · Password (type=password) · Stream format (TS/HLS) · *Test connection* button → `GET /Xtream/Test?Url&Username&Password` shows status/expiry/max connections and loads categories into a multi-select (`GET /Xtream/Categories?...`) · "Import guide data from provider" checkbox + guide source select · "Enable catch-up" checkbox + max days · Simultaneous connection limit · User-Agent.
+Fields: Friendly name · Server URL (accepts a full `get.php` M3U URL and splits it) · Username · Password (type=password) · Stream format (TS/HLS) · *Test connection* button → `POST /Xtream/Test` (JSON body `{Url, Username, Password, UserAgent}`) shows status/expiry/max connections and loads categories into a multi-select (`POST /Xtream/Categories`) · "Import guide data from provider" checkbox + guide source select · "Enable catch-up" checkbox + max days · Simultaneous connection limit · User-Agent.
 Save: start from `getTunerHostConfiguration(id)` / `getDefaultTunerHostConfiguration('xtream')`, fill `Url`, `FriendlyName`, `TunerCount`, `UserAgent`, `ImportGuideData`, set `ProviderOptions = JSON.stringify(options)`, `saveTunerHostConfiguration`.
 
 Main config page (`config.html`): global defaults (`EpgCacheHours`=6, `CatchupMaxDays`=7, `EnableCatchupChannel`=true, `HttpTimeoutSeconds`=60) and a short "how to add a source" explanation. Use the standard `ApiClient.getPluginConfiguration(pluginId)` / `updatePluginConfiguration`.

@@ -13,7 +13,7 @@ using MediaBrowser.Model.Services;
 
 namespace Emby.Xtream.Api
 {
-    [Route("/Xtream/Test", "GET", Summary = "Tests an Xtream Codes server and credentials")]
+    [Route("/Xtream/Test", "POST", Summary = "Tests an Xtream Codes server and credentials")]
     [Authenticated(Roles = "Admin")]
     public class TestXtream : IReturn<TestXtreamResult>
     {
@@ -23,7 +23,7 @@ namespace Emby.Xtream.Api
         public string UserAgent { get; set; }
     }
 
-    [Route("/Xtream/Categories", "GET", Summary = "Lists the live categories of an Xtream Codes server")]
+    [Route("/Xtream/Categories", "POST", Summary = "Lists the live categories of an Xtream Codes server")]
     [Authenticated(Roles = "Admin")]
     public class GetXtreamCategories : IReturn<List<XtreamCategoryDto>>
     {
@@ -67,7 +67,7 @@ namespace Emby.Xtream.Api
             _logger = logManager.GetLogger("XtreamService");
         }
 
-        public async Task<object> Get(TestXtream request)
+        public async Task<object> Post(TestXtream request)
         {
             XtreamCredentials creds = ResolveCredentials(request.Url, request.Username, request.Password);
             var result = new TestXtreamResult { Url = creds.BaseUrl, Username = creds.Username, Password = creds.Password };
@@ -112,7 +112,7 @@ namespace Emby.Xtream.Api
             return result;
         }
 
-        public async Task<object> Get(GetXtreamCategories request)
+        public async Task<object> Post(GetXtreamCategories request)
         {
             XtreamCredentials creds = ResolveCredentials(request.Url, request.Username, request.Password);
             if (!creds.IsComplete) return new List<XtreamCategoryDto>();

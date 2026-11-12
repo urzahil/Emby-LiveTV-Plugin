@@ -76,8 +76,8 @@ If your provider does not answer the default `streaming/timeshift.php` URL, try 
   offered when they have finished and are flagged `has_archive` (or, if the provider never sets the flag, simply when
   they have finished).
 * Live and catch-up streams count against the provider's connection limit.
-* The setup page's *Test connection* sends the credentials to your own Emby server as query parameters of an
-  admin-only request, so they may appear in Emby's HTTP request log.
+* The setup page's helper endpoints (`/Xtream/Test`, `/Xtream/Categories`) are POST with a JSON body and admin-only,
+  so credentials never appear in request URLs.
 
 ## Building from source
 

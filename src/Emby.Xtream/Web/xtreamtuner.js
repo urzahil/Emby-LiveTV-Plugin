@@ -79,7 +79,7 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
         if (!args.Url || !args.Username || !args.Password) {
             return Promise.resolve();
         }
-        return ApiClient.getJSON(ApiClient.getUrl('Xtream/Categories', args)).then(function (categories) {
+        return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('Xtream/Categories'), data: JSON.stringify(args), contentType: 'application/json', dataType: 'json' }).then(function (categories) {
             renderCategories(view, categories || [], selected);
         }, function () {
             renderCategories(view, [], selected);
@@ -139,7 +139,7 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
 
         result.textContent = globalize.translate('XtreamTesting');
 
-        ApiClient.getJSON(ApiClient.getUrl('Xtream/Test', args)).then(function (r) {
+        ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('Xtream/Test'), data: JSON.stringify(args), contentType: 'application/json', dataType: 'json' }).then(function (r) {
             if (r.Success) {
                 result.textContent = format(globalize.translate('XtreamTestOk'), [
                     r.Status || '-',
