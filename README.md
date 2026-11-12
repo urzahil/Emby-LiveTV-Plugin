@@ -22,7 +22,7 @@ Watch IPTV in Emby. This plugin adds an **Xtream Codes** provider as a native
 
 ## Install
 
-1. Download `Emby.Xtream.dll` from the [latest build artifact](https://github.com/urzahil/Emby-LiveTV-Plugin/actions/workflows/build.yml) (or [build it](#building-from-source)).
+1. Download `Emby.Xtream.dll` (or [build it](#building-from-source)).
 2. Copy it into the `plugins` folder of your Emby data directory:
    - Linux: `/var/lib/emby/plugins/`
    - Docker: `<config volume>/plugins/`
