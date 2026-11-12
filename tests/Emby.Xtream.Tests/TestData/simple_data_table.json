@@ -1,0 +1,4 @@
+{"epg_listings":[
+ {"id":"1","epg_id":"5","title":"TmV3cyBhdCBTaXg=","lang":"en","start":"2023-11-14 18:00:00","end":"2023-11-14 19:00:00","description":"RGFpbHkgbmV3cw==","channel_id":"news1.example","start_timestamp":"1699981200","stop_timestamp":"1699984800","now_playing":0,"has_archive":1},
+ {"id":"2","title":"Plain Title","description":"","start":"2023-11-14 19:00:00","end":"2023-11-14 20:00:00","start_timestamp":1699984800,"stop_timestamp":1699988400,"has_archive":"0"}
+]}

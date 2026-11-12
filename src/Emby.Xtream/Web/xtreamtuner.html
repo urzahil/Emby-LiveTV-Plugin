@@ -1,0 +1,104 @@
+<div is="emby-scroller" class="view flex flex-direction-column scrollFrameY flex-grow" data-horizontal="false" data-forcescrollbar="true" data-centerfocus="true" data-bindheader="true" data-controller="__plugin/xtreamtunerjs" data-title="${HeaderTVSourceSetup}">
+    <div class="scrollSlider flex-grow flex-direction-column padded-left padded-left-page padded-right padded-top-page padded-bottom-page">
+        <form class="auto-center">
+            <div class="verticalSection">
+
+                <div class="padded-bottom">
+                    <h3 class="typeName" style="margin-bottom:0;">Xtream Codes (IPTV)</h3>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" class="txtFriendlyName" label="${LabelFriendlyName}" autocomplete="off" />
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" class="txtServerUrl" label="${XtreamServerUrl}" required="required" autocomplete="off" />
+                    <div class="fieldDescription">${XtreamServerUrlHelp}</div>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" class="txtUsername" label="${XtreamUsername}" required="required" autocomplete="off" />
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="password" class="txtPassword" label="${XtreamPassword}" required="required" autocomplete="new-password" />
+                </div>
+
+                <div class="selectContainer">
+                    <select is="emby-select" class="selectStreamFormat" label="${XtreamStreamFormat}">
+                        <option value="ts">${XtreamFormatTs}</option>
+                        <option value="m3u8">${XtreamFormatHls}</option>
+                    </select>
+                    <div class="fieldDescription">${XtreamStreamFormatHelp}</div>
+                </div>
+
+                <div class="padded-bottom-page">
+                    <button is="emby-button" type="button" class="raised btnTest block">
+                        <span>${XtreamTestConnection}</span>
+                    </button>
+                    <div class="fieldDescription testResult" style="margin-top:.5em;"></div>
+                </div>
+
+                <div class="verticalSection">
+                    <h3 style="margin-bottom:0;">${XtreamCategories}</h3>
+                    <div class="fieldDescription">${XtreamCategoriesHelp}</div>
+                    <div class="categoryList" style="margin-top:.5em;"></div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" class="chkImportGuideData" />
+                        <span>${XtreamImportGuide}</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">${XtreamImportGuideHelp}</div>
+                </div>
+
+                <div class="selectContainer fldGuideSource">
+                    <select is="emby-select" class="selectGuideSource" label="${XtreamGuideSource}">
+                        <option value="xmltv">${XtreamGuideXmltv}</option>
+                        <option value="api">${XtreamGuideApi}</option>
+                    </select>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" class="chkEnableCatchup" />
+                        <span>${XtreamEnableCatchup}</span>
+                    </label>
+                    <div class="fieldDescription checkboxFieldDescription">${XtreamEnableCatchupHelp}</div>
+                </div>
+
+                <div class="inputContainer fldCatchupMaxDays">
+                    <input is="emby-input" type="number" pattern="[0-9]*" min="0" step="1" class="txtCatchupMaxDays" label="${XtreamCatchupMaxDays}" autocomplete="off" value="0" />
+                    <div class="fieldDescription">${XtreamCatchupMaxDaysHelp}</div>
+                </div>
+
+                <div class="selectContainer fldCatchupStyle">
+                    <select is="emby-select" class="selectCatchupStyle" label="${XtreamCatchupUrlStyle}">
+                        <option value="query">${XtreamCatchupStyleQuery}</option>
+                        <option value="path">${XtreamCatchupStylePath}</option>
+                    </select>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" pattern="[0-9]*" required="required" min="0" step="1" class="txtTunerCount" label="${LabelSimultaneousConnectionLimit}" autocomplete="off" value="1" />
+                    <div class="fieldDescription">${SimultaneousConnectionLimitHelp}</div>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="text" class="txtUserAgent" label="${LabelUserAgentHeader}" autocomplete="off" />
+                    <div class="fieldDescription">${SupplyCustomValueIfNeeded}</div>
+                </div>
+            </div>
+
+            <div>
+                <button is="emby-button" type="submit" class="raised button-submit block">
+                    <span>${Save}</span>
+                </button>
+                <button is="emby-button" type="button" class="raised button-cancel block btnCancel">
+                    <span>${Cancel}</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
