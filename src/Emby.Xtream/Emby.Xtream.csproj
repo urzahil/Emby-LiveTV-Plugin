@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>Emby.Xtream</AssemblyName>
+    <RootNamespace>Emby.Xtream</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <Version>1.0.0.0</Version>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="mediabrowser.server.core" Version="4.8.11" PrivateAssets="all" ExcludeAssets="runtime" />
+    <!-- compile-time only: the Emby SDK exposes ReadOnlySpan in its public surface; Emby ships System.Memory itself -->
+    <PackageReference Include="System.Memory" Version="4.5.5" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Emby.Xtream.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Web\xtreamtuner.html" LogicalName="Emby.Xtream.Web.xtreamtuner.html" />
+    <EmbeddedResource Include="Web\xtreamtuner.js" LogicalName="Emby.Xtream.Web.xtreamtuner.js" />
+    <EmbeddedResource Include="Web\config.html" LogicalName="Emby.Xtream.Web.config.html" />
+    <EmbeddedResource Include="Web\config.js" LogicalName="Emby.Xtream.Web.config.js" />
+    <EmbeddedResource Include="strings.en-US.json" LogicalName="Emby.Xtream.strings.en-US.json" WithCulture="false" />
+    <EmbeddedResource Include="thumb.png" LogicalName="Emby.Xtream.thumb.png" />
+  </ItemGroup>
+
+</Project>

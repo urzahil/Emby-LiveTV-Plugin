@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="test">
+  <channel id="news1.example"><display-name>News One</display-name></channel>
+  <channel id="other.example"><display-name>Other</display-name></channel>
+  <programme start="20231114180000 +0100" stop="20231114190000 +0100" channel="news1.example">
+    <title lang="en">Evening News</title>
+    <sub-title>Headlines</sub-title>
+    <desc lang="en">All the news &amp; weather.</desc>
+    <category lang="en">News</category>
+    <category lang="en">Movie night</category>
+    <date>2019</date>
+    <icon src="http://img/p1.png" />
+    <episode-num system="xmltv_ns">1.4.</episode-num>
+  </programme>
+  <programme start="20231114190000 +0100" channel="news1.example">
+    <title>No Stop</title>
+  </programme>
+  <programme start="20231114200000 +0100" stop="20231114210000 +0100" channel="news1.example"/>
+  <programme start="20231114180000 +0100" stop="20231114190000 +0100" channel="other.example"><title>Filtered out</title></programme>
+  <programme start="20231101100000 +0000" stop="20231101110000 +0000" channel="news1.example"><title>Too old</title></programme>
+  <programme start="garbage" stop="20231114190000" channel="news1.example"><title>Bad date</title></programme>
+</tv>
