@@ -139,11 +139,6 @@ ffmpeg -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine=frequency=440 -
 
 Then add a source in Emby with `http://localhost:8080`, username `test`, password `test`.
 
-## Contributing
-
-Branches are named `feature/<what-it-adds>` or `fix/<what-it-fixes>`; open a pull request against `main`.
-CI builds and tests every push and attaches the compiled DLL as an artifact.
-
 ## License
 
 [GPL-3.0](LICENSE)
