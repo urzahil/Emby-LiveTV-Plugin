@@ -25,6 +25,15 @@ namespace Emby.Xtream
             Instance = this;
         }
 
+        /// <summary>Raised after the plugin settings were saved from the dashboard.</summary>
+        public static event EventHandler ConfigurationSaved;
+
+        public override void UpdateConfiguration(BasePluginConfiguration configuration)
+        {
+            base.UpdateConfiguration(configuration);
+            ConfigurationSaved?.Invoke(this, EventArgs.Empty);
+        }
+
         public override string Name => StaticName;
 
         public override string Description => "Xtream Codes IPTV provider as a Live TV tuner with guide data and catch-up.";
