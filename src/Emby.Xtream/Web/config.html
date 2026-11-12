@@ -1,0 +1,40 @@
+<div is="emby-scroller" class="view flex flex-direction-column scrollFrameY flex-grow" data-horizontal="false" data-forcescrollbar="true" data-centerfocus="true" data-bindheader="true" data-controller="__plugin/xtreamconfigjs" data-title="${XtreamHeaderConfig}">
+    <div class="scrollSlider flex-grow flex-direction-column padded-left padded-left-page padded-right padded-top-page padded-bottom-page">
+        <form class="auto-center">
+            <div class="verticalSection">
+                <div class="fieldDescription padded-bottom">${XtreamConfigIntro}</div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" pattern="[0-9]*" min="1" step="1" class="txtEpgCacheHours" label="${XtreamEpgCacheHours}" required="required" />
+                    <div class="fieldDescription">${XtreamEpgCacheHoursHelp}</div>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" pattern="[0-9]*" min="1" step="1" class="txtGuideDays" label="${XtreamGuideDays}" required="required" />
+                    <div class="fieldDescription">${XtreamGuideDaysHelp}</div>
+                </div>
+
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                        <input is="emby-checkbox" type="checkbox" class="chkEnableCatchupChannel" />
+                        <span>${XtreamEnableCatchupChannel}</span>
+                    </label>
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" pattern="[0-9]*" min="1" step="1" class="txtCatchupMaxDays" label="${XtreamPluginCatchupMaxDays}" required="required" />
+                </div>
+
+                <div class="inputContainer">
+                    <input is="emby-input" type="number" pattern="[0-9]*" min="5" step="1" class="txtHttpTimeout" label="${XtreamHttpTimeout}" required="required" />
+                </div>
+            </div>
+
+            <div>
+                <button is="emby-button" type="submit" class="raised button-submit block">
+                    <span>${Save}</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
