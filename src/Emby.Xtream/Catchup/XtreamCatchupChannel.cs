@@ -105,7 +105,7 @@ namespace Emby.Xtream.Catchup
             }
         }
 
-        public string Name => "IPTV Catch-up";
+        public string Name => "Catch-up";
 
         public string Description => "Watch past programmes from your Xtream Codes provider's TV archive.";
 
