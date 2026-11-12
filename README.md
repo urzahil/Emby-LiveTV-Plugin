@@ -69,6 +69,10 @@ Only channels the provider flags with an archive are listed, going back as far a
 *Maximum catch-up days*). Picking a programme plays it through the provider's timeshift URL, with the start time
 converted to the provider's server timezone as those URLs require.
 
+Emby fills the channel in the background (it copies the tree into its library), so it is not live: the plugin asks
+Emby to refresh it about 30 seconds after a TV source or the plugin settings are saved, two minutes after server start,
+and then every hour. A source with hundreds of archive channels takes a few minutes to fill on the first pass.
+
 Catch-up can be turned off per source (source page) or globally (plugin settings). If a provider does not answer the
 default `streaming/timeshift.php` URL, switch the source to the alternative `timeshift/user/pass/…` style.
 
@@ -100,6 +104,10 @@ default `streaming/timeshift.php` URL, switch the source to the alternative `tim
   (the default is `VLC/3.0.21 LibVLC/3.0.21`).
 - **Guide is empty** — check that *Import guide data* is on and that the provider's `xmltv.php` is not empty; the
   *Provider API* source is a fallback.
+- **IPTV Catch-up is empty** — wait a few minutes after adding the source, or run *Scheduled Tasks → Internet
+  Channels → Refresh Internet Channels* to fill it now. Only channels the provider marks with `tv_archive` are listed,
+  and only from the categories ticked on the source page. If it stays empty, search `embyserver.txt` for
+  `Catch-up listing failed`.
 - **Catch-up plays the wrong time** — the provider reports a wrong `timezone` in `server_info`; this is a provider bug
   the plugin cannot correct.
 

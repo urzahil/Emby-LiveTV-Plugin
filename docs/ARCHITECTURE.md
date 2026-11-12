@@ -107,7 +107,7 @@ src/Emby.Xtream/
     GuideCache.cs                 per-tuner cached XMLTV (disk under Config.ApplicationPaths.CachePath/xtream/, TTL = PluginConfiguration.EpgCacheHours)
     EmbyHttp.cs                   IXtreamHttp over MediaBrowser.Common.Net.IHttpClient
   Catchup/
-    XtreamCatchupChannel.cs       : IChannel, IRequiresMediaInfoCallback, IHasCacheKey, IHasChannelFeatures
+    XtreamCatchupChannel.cs       : IChannel, IRequiresMediaInfoCallback, IHasChangeEvent
     CatchupItemId.cs              encode/decode folder & item ids
   Api/
     XtreamService.cs              : IService  — POST /Xtream/Test, POST /Xtream/Categories (JSON body, Admin only)
@@ -163,8 +163,10 @@ leaf  ...|p|{startTs}|{stopTs}|{urlsafe-title}  -> ChannelItemInfo{Type=Media, M
 ```
 
 * Items carry **no** `MediaSources`; `IRequiresMediaInfoCallback.GetChannelItemMediaInfo(id)` builds the timeshift URL at play time (duration = stop-start in minutes, start converted from UTC to `server_info.timezone` via `TimeZoneInfo.FindSystemTimeZoneById` with try/catch → fallback to UTC offset derived from `server_info.time_now` vs `timestamp_now`). `MediaSourceInfo`: `Protocol = Http`, `Container = "ts"`, `IsInfiniteStream = false`, `RunTimeTicks`, `SupportsDirectStream = true`, `SupportsTranscoding = true`, `SupportsProbing = true`, `RequiredHttpHeaders` (UA), `IsRemote = true`.
-* `IHasCacheKey.GetCacheKey(userId)` returns a value that changes hourly so Emby refreshes day listings but doesn't hammer the provider; EPG tables are additionally cached in memory for 30 minutes per stream.
-* `IHasChannelFeatures.Features`: `MediaTypes=[Video]`, `ContentTypes=[Clip]`, `MaxPageSize=200`, `DefaultSortFields=[Name]`, `AutoRefreshLevels=2`.
+* **Emby 4.8 never calls `GetChannelItems` while a user browses.** `ChannelManager.RefreshChannel` walks the whole tree (up to 6 levels) and stores it as library items; browsing and the home-screen *Latest* row read those items. The walk runs from the *Refresh Internet Channels* task (every 12 h, plus once at startup only when the set of installed channels changed — i.e. normally before the user has added a source) or when an `IHasChangeEvent.ContentChanged` is raised. The channel therefore raises `ContentChanged` 2 min after startup, 30 s after a `livetv` named-configuration or plugin-configuration save (debounced, caches cleared), and hourly. `IHasCacheKey` / `InternalChannelFeatures.AutoRefreshLevels` from older SDKs do not exist in 4.8 (`ChannelFeatures` only has `ShowRootFoldersAtTopLevel` and `LibraryOptions`).
+* Items missing from a `GetChannelItems` result are **deleted** from the library, so a provider error must throw (Emby logs it and keeps the stored items) rather than return an empty list. Empty is only returned when catch-up is disabled or no source has it enabled.
+* Programmes set `DateCreated` = programme end, because *Latest* sorts channel items by `DateCreated` descending.
+* EPG tables are cached in memory for 30 minutes per stream; the walk is depth-first, so one hourly refresh costs one `get_simple_data_table` request per archive channel.
 * Credentials never appear in item ids; ids only hold tuner id / stream id / timestamps.
 
 ---

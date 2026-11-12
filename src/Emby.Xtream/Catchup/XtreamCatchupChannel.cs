@@ -7,8 +7,10 @@ using System.Threading.Tasks;
 using Emby.Xtream.LiveTv;
 using Emby.Xtream.Xtream;
 using MediaBrowser.Common.Extensions;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Channels;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Providers;
@@ -27,8 +29,14 @@ namespace Emby.Xtream.Catchup
     /// Emby has no catch-up concept in its Live TV API, so provider archives are exposed as a browsable Channel:
     /// tuner > category > channel > day > programme. Leaf items carry no media sources; the timeshift URL (which contains
     /// credentials) is built at play time by <see cref="GetChannelItemMediaInfo"/>.
+    /// <para>
+    /// Emby 4.8 does not call <see cref="GetChannelItems"/> while a user browses: it copies the tree into its library
+    /// database during the "Refresh Internet Channels" task (once when the plugin is first seen, then every 12 hours)
+    /// and browsing reads that copy. So this channel asks Emby for a refresh itself (<see cref="ContentChanged"/>):
+    /// shortly after startup, when a TV source or the plugin settings are saved, and hourly so "Today" stays current.
+    /// </para>
     /// </summary>
-    public class XtreamCatchupChannel : IChannel, IRequiresMediaInfoCallback
+    public class XtreamCatchupChannel : IChannel, IRequiresMediaInfoCallback, IHasChangeEvent
     {
         private sealed class Catalog
         {
@@ -40,6 +48,9 @@ namespace Emby.Xtream.Catchup
 
         private static readonly TimeSpan CatalogTtl = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan EpgTtl = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan StartupRefreshDelay = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan ConfigRefreshDelay = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan PeriodicRefresh = TimeSpan.FromHours(1);
 
         private readonly ILiveTvManager _liveTv;
         private readonly IHttpClient _http;
@@ -48,13 +59,50 @@ namespace Emby.Xtream.Catchup
         private readonly EpgTableCache _epg = new EpgTableCache(4);
         private readonly Dictionary<string, Catalog> _catalogs = new Dictionary<string, Catalog>(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _catalogGate = new SemaphoreSlim(1, 1);
+        private readonly Timer _refreshTimer;
 
-        public XtreamCatchupChannel(ILiveTvManager liveTvManager, IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogManager logManager)
+        public XtreamCatchupChannel(ILiveTvManager liveTvManager, IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogManager logManager,
+            IServerConfigurationManager configurationManager)
         {
             _liveTv = liveTvManager;
             _http = httpClient;
             _json = jsonSerializer;
             _logger = logManager.GetLogger("XtreamCatchup");
+
+            _refreshTimer = new Timer(_ => RaiseContentChanged(), null, StartupRefreshDelay, PeriodicRefresh);
+            configurationManager.NamedConfigurationUpdated += OnNamedConfigurationUpdated;
+            Plugin.ConfigurationSaved += OnPluginConfigurationSaved;
+        }
+
+        /// <summary>Tells Emby to re-read the channel tree into its library.</summary>
+        public event EventHandler ContentChanged;
+
+        private void OnNamedConfigurationUpdated(object sender, ConfigurationUpdateEventArgs e)
+        {
+            // TV sources (tuner hosts) live in the "livetv" named configuration
+            if (string.Equals(e.Key, "livetv", StringComparison.OrdinalIgnoreCase)) ScheduleRefresh();
+        }
+
+        private void OnPluginConfigurationSaved(object sender, EventArgs e) => ScheduleRefresh();
+
+        /// <summary>Debounced: saving a source usually fires several updates in a row.</summary>
+        private void ScheduleRefresh()
+        {
+            lock (_catalogs) _catalogs.Clear();
+            _epg.Clear();
+            _refreshTimer.Change(ConfigRefreshDelay, PeriodicRefresh);
+        }
+
+        private void RaiseContentChanged()
+        {
+            try
+            {
+                ContentChanged?.Invoke(this, EventArgs.Empty);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error("Could not request a catch-up refresh: {0}", ex.Message);
+            }
         }
 
         public string Name => "IPTV Catch-up";
@@ -97,8 +145,11 @@ namespace Emby.Xtream.Catchup
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                _logger.Error("Catch-up listing failed: {0}", XtreamUrlBuilder.SanitizeText(ex.Message));
-                return empty;
+                // Rethrow rather than return an empty list: Emby deletes every stored item missing from the result,
+                // so one provider hiccup would wipe the catch-up tree until the next refresh.
+                string message = XtreamUrlBuilder.SanitizeText(ex.Message);
+                _logger.Error("Catch-up listing failed: {0}", message);
+                throw new InvalidOperationException("Catch-up listing failed: " + message);
             }
 
             int total = items.Count;
@@ -226,6 +277,8 @@ namespace Emby.Xtream.Catchup
                     MediaType = ChannelMediaType.Video,
                     ContentType = ChannelMediaContentType.Clip,
                     PremiereDate = new DateTimeOffset(DateTime.SpecifyKind(p.StartUtc, DateTimeKind.Utc)),
+                    // Emby's "Latest" row on the home screen sorts channel items by DateCreated: newest finished first
+                    DateCreated = new DateTimeOffset(DateTime.SpecifyKind(p.StopUtc, DateTimeKind.Utc)),
                     RunTimeTicks = (p.StopUtc - p.StartUtc).Ticks,
                     ImageUrl = stream.StreamIcon,
                     IsLiveStream = false
@@ -303,7 +356,8 @@ namespace Emby.Xtream.Catchup
             try
             {
                 Catalog cached;
-                if (_catalogs.TryGetValue(tuner.Id, out cached) && DateTime.UtcNow - cached.LoadedUtc < CatalogTtl) return cached;
+                lock (_catalogs) _catalogs.TryGetValue(tuner.Id, out cached);
+                if (cached != null && DateTime.UtcNow - cached.LoadedUtc < CatalogTtl) return cached;
 
                 var options = XtreamTunerSupport.GetOptions(_json, tuner);
                 var client = XtreamTunerSupport.CreateClient(_http, tuner, options);
@@ -319,7 +373,7 @@ namespace Emby.Xtream.Catchup
                     Streams = streams,
                     Clock = XtreamClock.FromServerInfo(account.ServerInfo)
                 };
-                _catalogs[tuner.Id] = catalog;
+                lock (_catalogs) _catalogs[tuner.Id] = catalog;
                 return catalog;
             }
             finally
