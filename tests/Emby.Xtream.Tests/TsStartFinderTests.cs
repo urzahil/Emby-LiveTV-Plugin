@@ -201,6 +201,32 @@ namespace Emby.Xtream.Tests
 
     public class CatchupStreamRegistryTests
     {
+        private sealed class Conn : IDisposable
+        {
+            public int Disposed;
+            public void Dispose() => Disposed++;
+        }
+
+        [Fact]
+        public void ANewConnectionForAProgrammeClosesThePreviousOneOnly()
+        {
+            var now = DateTime.UtcNow;
+            string a = CatchupStreamRegistry.Register("http://p/active/a.ts", "UA", now);
+            string b = CatchupStreamRegistry.Register("http://p/active/b.ts", "UA", now);
+            var a1 = new Conn(); var a2 = new Conn(); var b1 = new Conn();
+
+            CatchupStreamRegistry.ReplaceActive(a, a1);
+            CatchupStreamRegistry.ReplaceActive(b, b1);
+            CatchupStreamRegistry.ReplaceActive(a, null);   // a seek arrives: close a's old connection
+            Assert.Equal(1, a1.Disposed);
+            Assert.Equal(0, b1.Disposed);                   // other programmes are left alone
+
+            CatchupStreamRegistry.ReplaceActive(a, a2);
+            CatchupStreamRegistry.ReplaceActive(a, a2);     // the same connection again is not closed
+            Assert.Equal(0, a2.Disposed);
+            Assert.Equal(1, a1.Disposed);
+        }
+
         [Fact]
         public void TokensAreRandomStableForAUrlAndExpire()
         {

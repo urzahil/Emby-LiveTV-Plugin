@@ -36,10 +36,10 @@ namespace Emby.Xtream.Api
     public class CatchupStreamService : IService, IRequiresRequest
     {
         private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(30);
-        // A provider that allows one stream at a time answers 503 until the previous connection (the ffmpeg run Emby just
-        // stopped for a seek, or ffprobe) has closed on its side.
-        private static readonly TimeSpan BusyRetryDelay = TimeSpan.FromSeconds(1);
-        private const int BusyRetries = 8;
+        // A provider that allows one stream at a time answers 503 until the previous connection has closed on its side
+        // (the plugin closes its own previous connection for the same programme first, see CatchupStreamRegistry.ReplaceActive).
+        private static readonly TimeSpan BusyRetryDelay = TimeSpan.FromMilliseconds(500);
+        private const int BusyRetries = 16;
         private const int MaxBufferedStart = 32 * 1024 * 1024;
 
         private readonly IHttpClient _http;
@@ -78,7 +78,7 @@ namespace Emby.Xtream.Api
         /// <summary>Opens the provider at offset 0, finds the start offset and serves from it; then serves a pending range.</summary>
         private async Task<object> ServeFromStart(string token, CatchupStreamRegistry.Entry entry, ByteRange range, CancellationToken ct)
         {
-            HttpResponseInfo response = await Open(entry, null, ct).ConfigureAwait(false);
+            HttpResponseInfo response = await Open(token, entry, null, ct).ConfigureAwait(false);
             byte[] buffered;
             int count;
             long start;
@@ -126,7 +126,7 @@ namespace Emby.Xtream.Api
                 response.Dispose();
                 object ranged = await ServeRange(token, entry, range, ct).ConfigureAwait(false);
                 if (ranged != null) return ranged;
-                response = await Open(entry, null, ct).ConfigureAwait(false);
+                response = await Open(token, entry, null, ct).ConfigureAwait(false);
                 return Result(new PrefixedStream(new byte[0], 0, 0, response.Content), 200, null, null);
             }
 
@@ -146,7 +146,7 @@ namespace Emby.Xtream.Api
 
             long last = range.LastByte(length);
             // clamp before shifting, so a huge end value from the caller cannot overflow
-            HttpResponseInfo response = await Open(entry, new ByteRange(range.From, last).ToHeader(entry.StartOffset.Value), ct).ConfigureAwait(false);
+            HttpResponseInfo response = await Open(token, entry, new ByteRange(range.From, last).ToHeader(entry.StartOffset.Value), ct).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.PartialContent)
             {
                 response.Dispose();
@@ -160,8 +160,10 @@ namespace Emby.Xtream.Api
             return Result(new PrefixedStream(new byte[0], 0, 0, response.Content), 206, last - range.From + 1, contentRange);
         }
 
-        private async Task<HttpResponseInfo> Open(CatchupStreamRegistry.Entry entry, string rangeHeader, CancellationToken ct)
+        private async Task<HttpResponseInfo> Open(string token, CatchupStreamRegistry.Entry entry, string rangeHeader, CancellationToken ct)
         {
+            // the connection a superseded request for this programme still holds would make the provider answer 503
+            CatchupStreamRegistry.ReplaceActive(token, null);
             for (int attempt = 0; ; attempt++)
             {
                 var options = new HttpRequestOptions
@@ -181,7 +183,9 @@ namespace Emby.Xtream.Api
 
                 try
                 {
-                    return await _http.GetResponse(options).ConfigureAwait(false);
+                    HttpResponseInfo response = await _http.GetResponse(options).ConfigureAwait(false);
+                    CatchupStreamRegistry.ReplaceActive(token, response);
+                    return response;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (HttpException ex) when (ex.StatusCode == HttpStatusCode.ServiceUnavailable && attempt < BusyRetries)

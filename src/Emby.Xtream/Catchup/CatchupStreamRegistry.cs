@@ -26,6 +26,7 @@ namespace Emby.Xtream.Catchup
 
         private static readonly Dictionary<string, Entry> ByToken = new Dictionary<string, Entry>(StringComparer.Ordinal);
         private static readonly Dictionary<string, string> TokenByUrl = new Dictionary<string, string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, IDisposable> ActiveByToken = new Dictionary<string, IDisposable>(StringComparer.Ordinal);
 
         /// <summary>Returns the token for this URL (the same one while it is in use, so Emby sees a stable media source).</summary>
         public static string Register(string url, string userAgent, DateTime utcNow)
@@ -79,6 +80,26 @@ namespace Emby.Xtream.Catchup
             }
         }
 
+        /// <summary>
+        /// Closes the provider connection a previous request for this token still holds, and remembers <paramref name="next"/>.
+        /// ffmpeg opens the connection for a seek before it closes the old one, and a provider that allows one stream at a
+        /// time answers the new one with 503 for as long as the old one stays open.
+        /// </summary>
+        public static void ReplaceActive(string token, IDisposable next)
+        {
+            IDisposable previous;
+            lock (ByToken)
+            {
+                ActiveByToken.TryGetValue(token, out previous);
+                if (next == null) ActiveByToken.Remove(token);
+                else ActiveByToken[token] = next;
+            }
+            if (previous != null && !ReferenceEquals(previous, next))
+            {
+                try { previous.Dispose(); } catch (Exception) { /* already closed */ }
+            }
+        }
+
         private static void Purge(DateTime utcNow)
         {
             List<string> expired = null;
@@ -89,6 +110,7 @@ namespace Emby.Xtream.Catchup
             {
                 TokenByUrl.Remove(ByToken[token].Url);
                 ByToken.Remove(token);
+                ActiveByToken.Remove(token);
             }
         }
 
