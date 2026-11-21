@@ -30,12 +30,18 @@ namespace Emby.Xtream.Catchup
         public static bool TryParseDayId(string id, out DateTime day) =>
             DateTime.TryParseExact(id, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
 
-        public static string DayLabel(DateTime day, DateTime serverToday)
-        {
-            if (day.Date == serverToday.Date) return "Today";
-            if (day.Date == serverToday.Date.AddDays(-1)) return "Yesterday";
-            return day.ToString("dddd d MMMM", CultureInfo.InvariantCulture);
-        }
+        /// <summary>
+        /// The date itself, e.g. "Saturday 21 November", never a relative word like "Today". Emby stores a folder's name
+        /// the first time it sees the folder and does not rename it on later refreshes, so a relative label would go stale.
+        /// </summary>
+        public static string DayLabel(DateTime day) => day.ToString("dddd d MMMM", CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// <see cref="MediaBrowser.Controller.Channels.ChannelItemInfo.DateModified"/> for day folders. Emby rewrites the name of
+        /// a stored folder only when this value is later than the one it stored, so folders saved by older versions as "Today"
+        /// get the date label once. Raise it whenever <see cref="DayLabel"/> output changes.
+        /// </summary>
+        public static readonly DateTimeOffset DayLabelsRevised = new DateTimeOffset(2026, 11, 21, 0, 0, 0, TimeSpan.Zero);
 
         /// <summary>
         /// Programmes of one server-local day that can be played from the archive: already finished, inside the retention window,
