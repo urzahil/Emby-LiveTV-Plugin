@@ -15,6 +15,10 @@ namespace Emby.Xtream.Catchup
             public string Url;
             public string UserAgent;
             public DateTime LastUsedUtc;
+            /// <summary>Provider byte offset the served stream starts at (TsStartFinder); null until the first request found it.</summary>
+            public long? StartOffset;
+            /// <summary>Length of the served stream when the provider supports byte ranges; null when it cannot seek.</summary>
+            public long? SeekableLength;
         }
 
         /// <summary>Long enough for a paused multi-hour programme; each request extends it.</summary>
@@ -54,8 +58,24 @@ namespace Emby.Xtream.Catchup
                 Entry found;
                 if (!ByToken.TryGetValue(token, out found)) return false;
                 found.LastUsedUtc = utcNow;
-                entry = new Entry { Url = found.Url, UserAgent = found.UserAgent, LastUsedUtc = utcNow };
+                entry = new Entry
+                {
+                    Url = found.Url, UserAgent = found.UserAgent, LastUsedUtc = utcNow,
+                    StartOffset = found.StartOffset, SeekableLength = found.SeekableLength
+                };
                 return true;
+            }
+        }
+
+        /// <summary>Remembers where the served stream starts and how long it is, so byte ranges can be mapped later.</summary>
+        public static void SetLayout(string token, long startOffset, long? seekableLength)
+        {
+            lock (ByToken)
+            {
+                Entry found;
+                if (!ByToken.TryGetValue(token, out found)) return;
+                found.StartOffset = startOffset;
+                found.SeekableLength = seekableLength;
             }
         }
 

@@ -63,110 +63,139 @@ namespace Emby.Xtream.Tests
             return list;
         }
 
-        public static byte[] Run(TsHeaderGate gate, byte[] input, int chunk = 1000)
-        {
-            var output = new MemoryStream();
-            for (int i = 0; i < input.Length; i += chunk) gate.Write(input, i, Math.Min(chunk, input.Length - i), output);
-            gate.Complete(output);
-            return output.ToArray();
-        }
     }
 
-    public class TsHeaderGateTests
+    public class TsStartFinderTests
     {
         private const byte H264Slice = 0x41, H264Sps = 0x67, HevcSps = 0x42, HevcSlice = 0x02;
+
+        private static TsStartFinder Find(byte[] input, int chunk = 1000, long maxScan = 64L * 1024 * 1024)
+        {
+            var finder = new TsStartFinder(maxScan);
+            for (int i = 0; i < input.Length && !finder.IsDone; i += chunk) finder.Write(input, i, Math.Min(chunk, input.Length - i));
+            finder.Complete();
+            return finder;
+        }
 
         [Theory]
         [InlineData(1)]
         [InlineData(100)]
         [InlineData(188)]
         [InlineData(65536)]
-        public void StartsAtTheFirstAccessUnitWithSpsAndPrependsPatAndPmt(int chunk)
+        public void StartsAtTheLastPatBeforeTheFirstAccessUnitWithSps(int chunk)
         {
             byte[] input = Ts.Concat(
-                Ts.VideoMore(1),                 // mid-PES garbage before any table
-                Ts.Pat(), Ts.Pmt(),
-                Ts.VideoStart(H264Slice, 2),     // access unit without headers
-                Ts.Audio(3), Ts.VideoMore(4),
-                Ts.Pat(), Ts.Pmt(),
-                Ts.VideoStart(H264Sps, 5),       // first keyframe with SPS
-                Ts.Audio(6), Ts.VideoMore(7), Ts.VideoStart(H264Slice, 8));
+                Ts.VideoMore(1),                 // 0: mid-PES garbage
+                Ts.Pat(), Ts.Pmt(),              // 1, 2
+                Ts.VideoStart(H264Slice, 2),     // 3: access unit without headers
+                Ts.Audio(3), Ts.VideoMore(4),    // 4, 5
+                Ts.Pat(), Ts.Pmt(),              // 6, 7  <- start here
+                Ts.VideoStart(H264Sps, 5),       // 8: keyframe with SPS
+                Ts.Audio(6));
 
-            var gate = new TsHeaderGate();
-            var packets = Ts.Split(Ts.Run(gate, input, chunk));
+            var finder = Find(input, chunk);
+            Assert.Equal("headers", finder.Reason);
+            Assert.Equal(6 * 188, finder.Offset);
+        }
 
-            Assert.True(gate.IsOpen);
-            Assert.Equal("headers", gate.OpenReason);
-            Assert.Equal(6, packets.Count);
-            Assert.Equal(0, packets[0][2]);                        // PAT
-            Assert.Equal(Ts.PmtPid & 0xFF, packets[1][2]);         // PMT
-            Assert.Equal(new byte[] { 5, 6, 7, 8 }, packets.Skip(2).Select(p => p[187]).ToArray());
-            // everything before packet 5 was dropped from the input (the PAT/PMT copies in front are re-sent, not passed)
-            Assert.Equal(8 * 188, gate.SkippedBytes);
+        [Fact]
+        public void AnSpsWithoutAPatAndPmtBeforeItIsNotAStart()
+        {
+            byte[] input = Ts.Concat(
+                Ts.VideoStart(H264Sps, 1),       // 0: headers, but no tables yet
+                Ts.Pat(), Ts.VideoStart(H264Sps, 2), // 1: PAT without PMT before the keyframe
+                Ts.Pat(), Ts.Pmt(), Ts.VideoStart(H264Sps, 3)); // 3 <- start
+            Assert.Equal(3 * 188, Find(input).Offset);
         }
 
         [Fact]
         public void FindsHevcSps()
         {
-            byte[] input = Ts.Concat(Ts.Pat(), Ts.Pmt(0x24), Ts.VideoStart(HevcSlice, 1), Ts.VideoStart(HevcSps, 2), Ts.Audio(3));
-            var packets = Ts.Split(Ts.Run(new TsHeaderGate(), input));
-            Assert.Equal(new byte[] { 2, 3 }, packets.Skip(2).Select(p => p[187]).ToArray());
+            byte[] input = Ts.Concat(Ts.Pat(), Ts.Pmt(0x24), Ts.VideoStart(HevcSlice, 1), Ts.Pat(), Ts.Pmt(0x24), Ts.VideoStart(HevcSps, 2));
+            Assert.Equal(3 * 188, Find(input).Offset);
         }
 
         [Fact]
-        public void PassesThroughWhenVideoIsNotH264OrHevc()
+        public void StreamsWithoutH264OrHevcStartAtTheFirstPat()
         {
-            byte[] input = Ts.Concat(Ts.Pat(), Ts.Pmt(0x02), Ts.VideoStart(H264Slice, 1), Ts.Audio(2));
-            var gate = new TsHeaderGate();
-            var packets = Ts.Split(Ts.Run(gate, input));
-            Assert.Equal("no-h264-or-hevc", gate.OpenReason);
-            Assert.Equal(new byte[] { 1, 2 }, packets.Skip(2).Select(p => p[187]).ToArray());
+            byte[] input = Ts.Concat(Ts.Audio(1), Ts.Pat(), Ts.Pmt(0x02), Ts.VideoStart(H264Slice, 2));
+            var finder = Find(input);
+            Assert.Equal("no-h264-or-hevc", finder.Reason);
+            Assert.Equal(188, finder.Offset);
         }
 
         [Fact]
-        public void GivesUpAfterTheSkipLimitAndKeepsEverythingAfterIt()
+        public void GivesUpAtTheScanLimitAndAtTheEnd()
         {
             var parts = new List<byte[]> { Ts.Pat(), Ts.Pmt() };
             for (int i = 0; i < 50; i++) parts.Add(Ts.VideoStart(H264Slice, (byte)(i + 1)));
-            var gate = new TsHeaderGate(maxSkipBytes: 10 * 188);
-            var packets = Ts.Split(Ts.Run(gate, Ts.Concat(parts.ToArray()), chunk: 188));
+            byte[] input = Ts.Concat(parts.ToArray());
 
-            Assert.Equal("limit", gate.OpenReason);
-            byte[] markers = packets.Skip(2).Select(p => p[187]).ToArray();
-            Assert.Equal(Enumerable.Range(markers[0], 51 - markers[0]).Select(i => (byte)i).ToArray(), markers);
+            var limited = Find(input, 188, maxScan: 10 * 188);
+            Assert.Equal("limit", limited.Reason);
+            Assert.Equal(0, limited.Offset);
+
+            var ended = Find(input);
+            Assert.Equal("end", ended.Reason);
+            Assert.Equal(0, ended.Offset);
         }
 
         [Fact]
-        public void ResyncsOnAStreamThatDoesNotStartOnAPacketBoundary()
+        public void OffsetsCountBytesBeforeTheFirstSyncByte()
         {
             byte[] input = Ts.Concat(new byte[] { 1, 2, 3 }, Ts.Pat(), Ts.Pmt(), Ts.VideoStart(H264Sps, 9));
-            var packets = Ts.Split(Ts.Run(new TsHeaderGate(), input));
-            Assert.Equal(3, packets.Count);
-            Assert.Equal(9, packets[2][187]);
+            Assert.Equal(3, Find(input).Offset);
+        }
+    }
+
+    public class ByteRangeTests
+    {
+        [Theory]
+        [InlineData("bytes=0-", 0L, null)]
+        [InlineData("bytes=100-", 100L, null)]
+        [InlineData("bytes=100-199", 100L, 199L)]
+        [InlineData(" BYTES = 5 - 6 ", null, null)]
+        public void Parses(string header, long? from, long? to)
+        {
+            var r = ByteRange.Parse(header);
+            if (from == null) { Assert.Null(r); return; }
+            Assert.Equal(from.Value, r.From);
+            Assert.Equal(to, r.To);
         }
 
-        [Fact]
-        public void AStreamThatEndsBeforeTheGateOpensIsHandedOver()
-        {
-            byte[] input = Ts.Concat(Ts.Pat(), Ts.Pmt(), Ts.VideoStart(H264Slice, 4));
-            var gate = new TsHeaderGate();
-            var packets = Ts.Split(Ts.Run(gate, input));
-            Assert.Equal("end", gate.OpenReason);
-            Assert.Equal(4, packets[2][187]);
-        }
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("bytes=-500")]
+        [InlineData("bytes=0-1,5-6")]
+        [InlineData("bytes=9-3")]
+        [InlineData("items=0-1")]
+        [InlineData("bytes=a-b")]
+        public void RejectsWhatItDoesNotSupport(string header) => Assert.Null(ByteRange.Parse(header));
 
         [Fact]
-        public void GatedStreamReturnsTheFilteredBytes()
+        public void ShiftsAndClampsToTheResource()
         {
-            byte[] input = Ts.Concat(Ts.Pat(), Ts.Pmt(), Ts.VideoStart(H264Slice, 1), Ts.VideoStart(H264Sps, 2), Ts.VideoMore(3));
-            TsHeaderGate opened = null;
-            using (var stream = new GatedStream(new MemoryStream(input), new TsHeaderGate(), g => opened = g))
+            Assert.Equal("bytes=1100-1199", ByteRange.Parse("bytes=100-199").ToHeader(1000));
+            Assert.Equal("bytes=1100-", ByteRange.Parse("bytes=100-").ToHeader(1000));
+            Assert.Equal(499, ByteRange.Parse("bytes=100-").LastByte(500));
+            Assert.Equal(199, ByteRange.Parse("bytes=100-199").LastByte(500));
+            Assert.Equal(499, ByteRange.Parse("bytes=100-9999").LastByte(500));
+        }
+    }
+
+    public class PrefixedStreamTests
+    {
+        [Fact]
+        public void ReturnsThePrefixSliceThenTheInnerStream()
+        {
+            byte[] prefix = { 9, 9, 1, 2, 3, 9 };
+            using (var s = new PrefixedStream(prefix, 2, 3, new MemoryStream(new byte[] { 4, 5 })))
             {
                 var output = new MemoryStream();
-                stream.CopyTo(output, 7);
-                Assert.Equal(new byte[] { 2, 3 }, Ts.Split(output.ToArray()).Skip(2).Select(p => p[187]).ToArray());
+                s.CopyTo(output, 2);
+                Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, output.ToArray());
             }
-            Assert.NotNull(opened);
         }
     }
 

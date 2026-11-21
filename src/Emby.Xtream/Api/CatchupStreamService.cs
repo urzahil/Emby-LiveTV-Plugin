@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Emby.Xtream.Catchup;
 using Emby.Xtream.Xtream;
@@ -8,6 +11,7 @@ using MediaBrowser.Common.Extensions;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Logging;
+using MediaBrowser.Model.Net;
 using MediaBrowser.Model.Services;
 
 namespace Emby.Xtream.Api
@@ -22,13 +26,21 @@ namespace Emby.Xtream.Api
     }
 
     /// <summary>
-    /// Serves a catch-up programme to Emby's own ffmpeg/ffprobe, starting at the first video headers
-    /// (<see cref="TsHeaderGate"/>). Not authenticated, because ffmpeg has no Emby token; instead it answers only
-    /// requests from the server itself, and only for a random token that <see cref="CatchupStreamRegistry"/> issued.
+    /// Serves a catch-up programme to Emby's own ffmpeg/ffprobe. The served stream is the provider's timeshift stream from
+    /// the offset <see cref="TsStartFinder"/> picks (so it starts with the video headers), byte for byte. When the provider
+    /// supports byte ranges this endpoint does too, shifted by that offset, so ffmpeg's <c>-ss</c> seeks instead of reading
+    /// through the whole programme.
+    /// <para>Not authenticated, because ffmpeg has no Emby token; instead it answers only requests from the server itself,
+    /// and only for a random token that <see cref="CatchupStreamRegistry"/> issued.</para>
     /// </summary>
     public class CatchupStreamService : IService, IRequiresRequest
     {
         private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(30);
+        // A provider that allows one stream at a time answers 503 until the previous connection (the ffmpeg run Emby just
+        // stopped for a seek, or ffprobe) has closed on its side.
+        private static readonly TimeSpan BusyRetryDelay = TimeSpan.FromSeconds(1);
+        private const int BusyRetries = 8;
+        private const int MaxBufferedStart = 32 * 1024 * 1024;
 
         private readonly IHttpClient _http;
         private readonly ILogger _logger;
@@ -50,43 +62,167 @@ namespace Emby.Xtream.Api
             if (remote == null || !IPAddress.IsLoopback(remote) || !CatchupStreamRegistry.TryResolve(request.Token, DateTime.UtcNow, out entry))
                 throw new ResourceNotFoundException();
 
-            var options = new HttpRequestOptions
-            {
-                Url = entry.Url,
-                CancellationToken = Request.CancellationToken,
-                UserAgent = string.IsNullOrWhiteSpace(entry.UserAgent) ? XtreamDefaults.UserAgent : entry.UserAgent,
-                TimeoutMs = (int)ConnectTimeout.TotalMilliseconds,
-                EnableHttpCompression = false,
-                BufferContent = false,
-                // the URL holds the provider password
-                LogRequest = false,
-                LogErrors = false,
-                ThrowOnErrorResponse = true
-            };
+            CancellationToken ct = Request.CancellationToken;
+            ByteRange range = ByteRange.Parse(Request.Headers?["Range"]);
+            if (range != null && range.From == 0) range = range.To.HasValue ? range : null; // "bytes=0-" is a plain read
 
-            System.IO.Stream provider;
-            try
+            if (range != null && entry.StartOffset.HasValue && entry.SeekableLength.HasValue)
             {
-                provider = await _http.Get(options).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                string message = XtreamUrlBuilder.SanitizeText(ex.Message);
-                _logger.Error("Catch-up stream could not be opened: {0}", message);
-                throw new InvalidOperationException("Catch-up stream could not be opened: " + message);
+                object ranged = await ServeRange(request.Token, entry, range, ct).ConfigureAwait(false);
+                if (ranged != null) return ranged;
             }
 
-            return new TsResponseStream(provider, new TsHeaderGate(), gate =>
-                _logger.Info("Catch-up stream starts after skipping {0} KB ({1})", gate.SkippedBytes / 1024, gate.OpenReason));
+            return await ServeFromStart(request.Token, entry, range, ct).ConfigureAwait(false);
         }
 
-        private sealed class TsResponseStream : GatedStream, IHasHeaders
+        /// <summary>Opens the provider at offset 0, finds the start offset and serves from it; then serves a pending range.</summary>
+        private async Task<object> ServeFromStart(string token, CatchupStreamRegistry.Entry entry, ByteRange range, CancellationToken ct)
         {
-            public TsResponseStream(System.IO.Stream inner, TsHeaderGate gate, Action<TsHeaderGate> onOpen) : base(inner, gate, onOpen) { }
+            HttpResponseInfo response = await Open(entry, null, ct).ConfigureAwait(false);
+            byte[] buffered;
+            int count;
+            long start;
+            try
+            {
+                var finder = new TsStartFinder();
+                buffered = new byte[256 * 1024];
+                count = 0;
+                while (!finder.IsDone)
+                {
+                    if (count == buffered.Length)
+                    {
+                        if (buffered.Length >= MaxBufferedStart) { finder.Complete(); break; }
+                        Array.Resize(ref buffered, Math.Min(buffered.Length * 2, MaxBufferedStart));
+                    }
+                    int n = await response.Content.ReadAsync(buffered, count, buffered.Length - count, ct).ConfigureAwait(false);
+                    if (n == 0) { finder.Complete(); break; }
+                    finder.Write(buffered, count, n);
+                    count += n;
+                }
+                start = finder.Offset;
+                if (start > count) start = 0;
 
-            public IDictionary<string, string> Headers { get; } =
-                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Content-Type"] = "video/mp2t" };
+                // a known length is taken as seekable; the first byte range the provider does not honour turns that off (ServeRange)
+                long? providerLength = response.StatusCode == HttpStatusCode.OK && !RefusesRanges(response) ? response.ContentLength : null;
+                long? servedLength = providerLength.HasValue && providerLength.Value > start ? providerLength.Value - start : (long?)null;
+                CatchupStreamRegistry.SetLayout(token, start, servedLength);
+                if (!entry.StartOffset.HasValue)
+                {
+                    _logger.Info("Catch-up stream starts after skipping {0} KB ({1}){2}", start / 1024, finder.Reason,
+                        servedLength.HasValue ? ", seekable" : ", not seekable");
+                }
+                entry.StartOffset = start;
+                entry.SeekableLength = servedLength;
+            }
+            catch
+            {
+                response.Dispose();
+                throw;
+            }
+
+            if (range != null && entry.SeekableLength.HasValue)
+            {
+                // the first request was already a seek: the layout is known now, reopen at the right place
+                response.Dispose();
+                object ranged = await ServeRange(token, entry, range, ct).ConfigureAwait(false);
+                if (ranged != null) return ranged;
+                response = await Open(entry, null, ct).ConfigureAwait(false);
+                return Result(new PrefixedStream(new byte[0], 0, 0, response.Content), 200, null, null);
+            }
+
+            var body = new PrefixedStream(buffered, (int)start, count - (int)start, response.Content);
+            if (!entry.SeekableLength.HasValue) return Result(body, 200, null, null);
+            long length = entry.SeekableLength.Value;
+            return range == null
+                ? Result(body, 200, length, null)
+                : Result(body, 206, length, "bytes 0-" + (length - 1).ToString(CultureInfo.InvariantCulture) + "/" + length.ToString(CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>Serves a byte range of the served stream from the same range of the provider file; null if the provider did not honour it.</summary>
+        private async Task<object> ServeRange(string token, CatchupStreamRegistry.Entry entry, ByteRange range, CancellationToken ct)
+        {
+            long length = entry.SeekableLength.Value;
+            if (range.From >= length) return Result(new MemoryStream(new byte[0]), 416, null, "bytes */" + length.ToString(CultureInfo.InvariantCulture));
+
+            long last = range.LastByte(length);
+            // clamp before shifting, so a huge end value from the caller cannot overflow
+            HttpResponseInfo response = await Open(entry, new ByteRange(range.From, last).ToHeader(entry.StartOffset.Value), ct).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.PartialContent)
+            {
+                response.Dispose();
+                CatchupStreamRegistry.SetLayout(token, entry.StartOffset.Value, null);
+                entry.SeekableLength = null;
+                _logger.Warn("Catch-up provider ignored a byte range; seeking is not available for this programme");
+                return null;
+            }
+            string contentRange = "bytes " + range.From.ToString(CultureInfo.InvariantCulture) + "-" + last.ToString(CultureInfo.InvariantCulture) +
+                                  "/" + length.ToString(CultureInfo.InvariantCulture);
+            return Result(new PrefixedStream(new byte[0], 0, 0, response.Content), 206, last - range.From + 1, contentRange);
+        }
+
+        private async Task<HttpResponseInfo> Open(CatchupStreamRegistry.Entry entry, string rangeHeader, CancellationToken ct)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                var options = new HttpRequestOptions
+                {
+                    Url = entry.Url,
+                    CancellationToken = ct,
+                    UserAgent = string.IsNullOrWhiteSpace(entry.UserAgent) ? XtreamDefaults.UserAgent : entry.UserAgent,
+                    TimeoutMs = (int)ConnectTimeout.TotalMilliseconds,
+                    EnableHttpCompression = false,
+                    BufferContent = false,
+                    // the URL holds the provider password
+                    LogRequest = false,
+                    LogErrors = false,
+                    ThrowOnErrorResponse = true
+                };
+                if (rangeHeader != null) options.RequestHeaders["Range"] = rangeHeader;
+
+                try
+                {
+                    return await _http.GetResponse(options).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (HttpException ex) when (ex.StatusCode == HttpStatusCode.ServiceUnavailable && attempt < BusyRetries)
+                {
+                    await Task.Delay(BusyRetryDelay, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    string message = XtreamUrlBuilder.SanitizeText(ex.Message);
+                    _logger.Error("Catch-up stream could not be opened: {0}", message);
+                    throw new InvalidOperationException("Catch-up stream could not be opened: " + message);
+                }
+            }
+        }
+
+        private static bool RefusesRanges(HttpResponseInfo response)
+        {
+            string value;
+            return response.Headers != null && response.Headers.TryGetValue("Accept-Ranges", out value) &&
+                   string.Equals(value?.Trim(), "none", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static TsResponse Result(Stream body, int status, long? contentLength, string contentRange)
+        {
+            var result = new TsResponse(body) { Status = status };
+            if (contentLength.HasValue || contentRange != null) result.Headers["Accept-Ranges"] = "bytes";
+            if (contentLength.HasValue) result.Headers["Content-Length"] = contentLength.Value.ToString(CultureInfo.InvariantCulture);
+            if (contentRange != null) result.Headers["Content-Range"] = contentRange;
+            return result;
+        }
+
+        /// <summary>The response body plus the status and headers Emby writes before copying it.</summary>
+        private sealed class TsResponse : PrefixedStream, IHttpResult
+        {
+            public TsResponse(Stream body) : base(new byte[0], 0, 0, body) { }
+
+            public IDictionary<string, string> Headers { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            public int Status { get; set; } = 200;
+            public HttpStatusCode StatusCode { get => (HttpStatusCode)Status; set => Status = (int)value; }
+            public string ContentType { get; set; } = "video/mp2t";
+            public IRequest RequestContext { get; set; }
         }
     }
 }
