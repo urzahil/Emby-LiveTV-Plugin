@@ -53,6 +53,10 @@ namespace Emby.Xtream.Api
 
         public IRequest Request { get; set; }
 
+        // per request (Emby creates a service instance per request): what was asked and since when, for the timing log
+        private string _label = string.Empty;
+        private System.Diagnostics.Stopwatch _clock = new System.Diagnostics.Stopwatch();
+
         public async Task<object> Get(GetCatchupStream request)
         {
             IPAddress remote = Request?.RemoteIp;
@@ -63,7 +67,10 @@ namespace Emby.Xtream.Api
                 throw new ResourceNotFoundException();
 
             CancellationToken ct = Request.CancellationToken;
-            ByteRange range = ByteRange.Parse(Request.Headers?["Range"]);
+            string rangeHeader = Request.Headers?["Range"];
+            ByteRange range = ByteRange.Parse(rangeHeader);
+            _label = string.IsNullOrEmpty(rangeHeader) ? "no range" : rangeHeader;
+            _clock = System.Diagnostics.Stopwatch.StartNew();
             if (range != null && range.From == 0) range = range.To.HasValue ? range : null; // "bytes=0-" is a plain read
 
             if (range != null && entry.StartOffset.HasValue && entry.SeekableLength.HasValue)
@@ -127,22 +134,22 @@ namespace Emby.Xtream.Api
                 object ranged = await ServeRange(token, entry, range, ct).ConfigureAwait(false);
                 if (ranged != null) return ranged;
                 response = await Open(token, entry, null, ct).ConfigureAwait(false);
-                return Result(new PrefixedStream(new byte[0], 0, 0, response.Content), 200, null, null);
+                return Result(response.Content, response, 200, null, null);
             }
 
             var body = new PrefixedStream(buffered, (int)start, count - (int)start, response.Content);
-            if (!entry.SeekableLength.HasValue) return Result(body, 200, null, null);
+            if (!entry.SeekableLength.HasValue) return Result(body, response, 200, null, null);
             long length = entry.SeekableLength.Value;
             return range == null
-                ? Result(body, 200, length, null)
-                : Result(body, 206, length, "bytes 0-" + (length - 1).ToString(CultureInfo.InvariantCulture) + "/" + length.ToString(CultureInfo.InvariantCulture));
+                ? Result(body, response, 200, length, null)
+                : Result(body, response, 206, length, "bytes 0-" + (length - 1).ToString(CultureInfo.InvariantCulture) + "/" + length.ToString(CultureInfo.InvariantCulture));
         }
 
         /// <summary>Serves a byte range of the served stream from the same range of the provider file; null if the provider did not honour it.</summary>
         private async Task<object> ServeRange(string token, CatchupStreamRegistry.Entry entry, ByteRange range, CancellationToken ct)
         {
             long length = entry.SeekableLength.Value;
-            if (range.From >= length) return Result(new MemoryStream(new byte[0]), 416, null, "bytes */" + length.ToString(CultureInfo.InvariantCulture));
+            if (range.From >= length) return Result(new MemoryStream(new byte[0]), null, 416, null, "bytes */" + length.ToString(CultureInfo.InvariantCulture));
 
             long last = range.LastByte(length);
             // clamp before shifting, so a huge end value from the caller cannot overflow
@@ -157,7 +164,7 @@ namespace Emby.Xtream.Api
             }
             string contentRange = "bytes " + range.From.ToString(CultureInfo.InvariantCulture) + "-" + last.ToString(CultureInfo.InvariantCulture) +
                                   "/" + length.ToString(CultureInfo.InvariantCulture);
-            return Result(new PrefixedStream(new byte[0], 0, 0, response.Content), 206, last - range.From + 1, contentRange);
+            return Result(response.Content, response, 206, last - range.From + 1, contentRange);
         }
 
         private async Task<HttpResponseInfo> Open(string token, CatchupStreamRegistry.Entry entry, string rangeHeader, CancellationToken ct)
@@ -183,13 +190,18 @@ namespace Emby.Xtream.Api
 
                 try
                 {
+                    var opened = System.Diagnostics.Stopwatch.StartNew();
                     HttpResponseInfo response = await _http.GetResponse(options).ConfigureAwait(false);
                     CatchupStreamRegistry.ReplaceActive(token, response);
+                    _logger.Info("Catch-up request ({0}): provider answered {1} to {2} in {3} ms{4}, {5} ms after the request arrived",
+                        _label, (int)response.StatusCode, rangeHeader ?? "no range", opened.ElapsedMilliseconds,
+                        attempt > 0 ? " after " + attempt + " busy retries" : string.Empty, _clock.ElapsedMilliseconds);
                     return response;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (HttpException ex) when (ex.StatusCode == HttpStatusCode.ServiceUnavailable && attempt < BusyRetries)
                 {
+                    if (attempt == 0) _logger.Info("Catch-up request ({0}): provider busy (503), retrying", _label);
                     await Task.Delay(BusyRetryDelay, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -208,9 +220,9 @@ namespace Emby.Xtream.Api
                    string.Equals(value?.Trim(), "none", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static TsResponse Result(Stream body, int status, long? contentLength, string contentRange)
+        private TsResponse Result(Stream body, IDisposable owner, int status, long? contentLength, string contentRange)
         {
-            var result = new TsResponse(body) { Status = status };
+            var result = new TsResponse(body, owner, _logger, _label, _clock) { Status = status };
             if (contentLength.HasValue || contentRange != null) result.Headers["Accept-Ranges"] = "bytes";
             if (contentLength.HasValue) result.Headers["Content-Length"] = contentLength.Value.ToString(CultureInfo.InvariantCulture);
             if (contentRange != null) result.Headers["Content-Range"] = contentRange;
@@ -220,7 +232,45 @@ namespace Emby.Xtream.Api
         /// <summary>The response body plus the status and headers Emby writes before copying it.</summary>
         private sealed class TsResponse : PrefixedStream, IHttpResult
         {
-            public TsResponse(Stream body) : base(new byte[0], 0, 0, body) { }
+            private readonly IDisposable _owner;
+            private readonly ILogger _log;
+            private readonly string _label;
+            private readonly System.Diagnostics.Stopwatch _clock;
+            private long _served;
+            private int _disposed;
+
+            /// <param name="owner">The provider response the body belongs to; released with the body, so its connection is not left open.</param>
+            public TsResponse(Stream body, IDisposable owner, ILogger log, string label, System.Diagnostics.Stopwatch clock) : base(new byte[0], 0, 0, body)
+            {
+                _owner = owner;
+                _log = log;
+                _label = label;
+                _clock = clock;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                int n = base.Read(buffer, offset, count);
+                _served += n;
+                return n;
+            }
+
+            public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                int n = await base.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false);
+                _served += n;
+                return n;
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    try { _owner?.Dispose(); } catch (Exception) { /* already closed by a newer request */ }
+                    _log.Info("Catch-up request ({0}) ended: {1} KB served, {2} ms after it arrived", _label, _served / 1024, _clock.ElapsedMilliseconds);
+                }
+                base.Dispose(disposing);
+            }
 
             public IDictionary<string, string> Headers { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             public int Status { get; set; } = 200;
