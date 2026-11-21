@@ -318,8 +318,9 @@ namespace Emby.Xtream.Catchup
             _logger.Info("Catch-up playback requested: {0}", XtreamUrlBuilder.Sanitize(url));
 
             // Emby's ffmpeg reads the programme through CatchupStreamService rather than from the provider: the provider's
-            // stream can start several seconds before the next video headers, longer than ffmpeg looks (TsHeaderGate), and
-            // a local token URL also keeps the credentials out of Emby's ffprobe/ffmpeg log lines.
+            // stream can start several seconds before the next video headers, longer than ffmpeg looks (TsStartFinder);
+            // the endpoint passes byte ranges through so Emby can seek; and a local token URL keeps the credentials out of
+            // Emby's ffprobe/ffmpeg log lines.
             string token = CatchupStreamRegistry.Register(url, XtreamTunerSupport.GetUserAgent(tuner), DateTime.UtcNow);
             string localUrl = "http://127.0.0.1:" + _appHost.HttpPort.ToString(CultureInfo.InvariantCulture) + "/emby/Xtream/Catchup/" + token;
 
