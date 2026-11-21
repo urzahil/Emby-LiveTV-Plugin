@@ -33,7 +33,8 @@ namespace Emby.Xtream.Catchup
     /// Emby 4.8 does not call <see cref="GetChannelItems"/> while a user browses: it copies the tree into its library
     /// database during the "Refresh Internet Channels" task (once when the plugin is first seen, then every 12 hours)
     /// and browsing reads that copy. So this channel asks Emby for a refresh itself (<see cref="ContentChanged"/>):
-    /// shortly after startup, when a TV source or the plugin settings are saved, and hourly so "Today" stays current.
+    /// shortly after startup, when a TV source or the plugin settings are saved, and hourly so new days and newly finished
+    /// programmes appear. Stored items are not renamed on a refresh, so folder names must not depend on the current date.
     /// </para>
     /// </summary>
     public class XtreamCatchupChannel : IChannel, IRequiresMediaInfoCallback, IHasChangeEvent
@@ -232,15 +233,13 @@ namespace Emby.Xtream.Catchup
 
             var options = XtreamTunerSupport.GetOptions(_json, tuner);
             int days = CatchupPlanner.EffectiveDays(stream.TvArchiveDuration, MaxDays(options));
-            DateTime utcNow = DateTime.UtcNow;
-            DateTime today = catalog.Clock.ToServer(utcNow).Date;
-
-            return CatchupPlanner.DayFolders(catalog.Clock, utcNow, days)
+            return CatchupPlanner.DayFolders(catalog.Clock, DateTime.UtcNow, days)
                 .Select(d =>
                 {
                     var item = Folder(CatchupItemId.ForDay(tuner.Id, id.CategoryId, id.StreamId, CatchupPlanner.DayId(d)).ToString(),
-                        CatchupPlanner.DayLabel(d, today), null);
+                        CatchupPlanner.DayLabel(d), null);
                     item.ImageUrl = stream.StreamIcon;
+                    item.DateModified = CatchupPlanner.DayLabelsRevised;
                     return item;
                 }).ToList();
         }

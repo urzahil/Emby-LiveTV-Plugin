@@ -230,10 +230,16 @@ namespace Emby.Xtream.Tests
             var now = new DateTime(2023, 11, 14, 23, 30, 0, DateTimeKind.Utc);
             var days = CatchupPlanner.DayFolders(Berlin, now, 3);
             Assert.Equal(new[] { new DateTime(2023, 11, 15), new DateTime(2023, 11, 14), new DateTime(2023, 11, 13) }, days.ToArray());
-            Assert.Equal("Today", CatchupPlanner.DayLabel(days[0], days[0]));
-            Assert.Equal("Yesterday", CatchupPlanner.DayLabel(days[1], days[0]));
-            Assert.Equal("Monday 13 November", CatchupPlanner.DayLabel(days[2], days[0]));
             Assert.Equal("20231115", CatchupPlanner.DayId(days[0]));
+        }
+
+        [Fact]
+        public void DayLabelsAreTheDateNotRelativeToToday()
+        {
+            // Emby keeps a folder's first name, so today's folder must already carry the label it will have next week
+            Assert.Equal("Wednesday 15 November", CatchupPlanner.DayLabel(new DateTime(2023, 11, 15)));
+            Assert.Equal("Tuesday 14 November", CatchupPlanner.DayLabel(new DateTime(2023, 11, 14)));
+            Assert.Equal("Monday 13 November", CatchupPlanner.DayLabel(new DateTime(2023, 11, 13, 18, 30, 0)));
         }
 
         [Fact]
