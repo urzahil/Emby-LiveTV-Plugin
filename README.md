@@ -94,6 +94,7 @@ default `streaming/timeshift.php` URL, switch the source to the alternative `tim
 - Live TV only; the VOD and series parts of the Xtream API are not imported.
 - Catch-up quality depends on the provider: archive length, `has_archive` flags and timeshift URL styles vary.
 - Live and catch-up streams both count against your provider's connection limit.
+- Catch-up streams through the plugin, which starts them at the first keyframe that carries the video headers. Playback can begin a few seconds after the programme's listed start.
 - Recording needs Emby Premiere, as with every Emby tuner.
 
 ## Troubleshooting

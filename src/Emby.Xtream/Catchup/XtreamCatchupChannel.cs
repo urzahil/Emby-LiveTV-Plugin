@@ -10,6 +10,7 @@ using MediaBrowser.Common.Extensions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Channels;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Controller.LiveTv;
@@ -61,11 +62,13 @@ namespace Emby.Xtream.Catchup
         private readonly Dictionary<string, Catalog> _catalogs = new Dictionary<string, Catalog>(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _catalogGate = new SemaphoreSlim(1, 1);
         private readonly Timer _refreshTimer;
+        private readonly IServerApplicationHost _appHost;
 
         public XtreamCatchupChannel(ILiveTvManager liveTvManager, IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogManager logManager,
-            IServerConfigurationManager configurationManager)
+            IServerConfigurationManager configurationManager, IServerApplicationHost appHost)
         {
             _liveTv = liveTvManager;
+            _appHost = appHost;
             _http = httpClient;
             _json = jsonSerializer;
             _logger = logManager.GetLogger("XtreamCatchup");
@@ -306,26 +309,26 @@ namespace Emby.Xtream.Catchup
 
             _logger.Info("Catch-up playback requested: {0}", XtreamUrlBuilder.Sanitize(url));
 
+            // Emby's ffmpeg reads the programme through CatchupStreamService rather than from the provider: the provider's
+            // stream can start several seconds before the next video headers, longer than ffmpeg looks (TsHeaderGate), and
+            // a local token URL also keeps the credentials out of Emby's ffprobe/ffmpeg log lines.
+            string token = CatchupStreamRegistry.Register(url, XtreamTunerSupport.GetUserAgent(tuner), DateTime.UtcNow);
+            string localUrl = "http://127.0.0.1:" + _appHost.HttpPort.ToString(CultureInfo.InvariantCulture) + "/emby/Xtream/Catchup/" + token;
+
             var source = new MediaSourceInfo
             {
-                Path = url,
+                Path = localUrl,
                 Protocol = MediaProtocol.Http,
                 Id = url.GetMD5().ToString("N"),
                 Container = "ts",
                 IsInfiniteStream = false,
                 IsRemote = true,
                 RunTimeTicks = TimeSpan.FromSeconds(Math.Max(1, item.StopTs - item.StartTs)).Ticks,
-                // Always go through ffmpeg (it copies the streams when the client can take them). Direct stream makes Emby
-                // proxy the timeshift URL like a static file (HEAD, byte ranges, known length), which providers' timeshift.php
-                // does not support, so clients that pick it — the Android TV app, which plays TS itself — hang on start.
-                // Browsers cannot play TS and always got the ffmpeg path, which is why catch-up worked there.
+                // Always through ffmpeg (it copies the streams when the client can take them): the catch-up endpoint serves
+                // one sequential stream and does not support the byte ranges Emby's direct-stream proxy would ask for.
                 SupportsDirectStream = false,
                 SupportsDirectPlay = false,
                 SupportsTranscoding = true,
-                RequiredHttpHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["User-Agent"] = XtreamTunerSupport.GetUserAgent(tuner)
-                },
                 MediaStreams = new List<MediaStream>
                 {
                     new MediaStream { Type = MediaStreamType.Video, Index = -1 },
