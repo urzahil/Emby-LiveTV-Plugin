@@ -63,12 +63,14 @@ namespace Emby.Xtream.Catchup
         private readonly SemaphoreSlim _catalogGate = new SemaphoreSlim(1, 1);
         private readonly Timer _refreshTimer;
         private readonly IServerApplicationHost _appHost;
+        private readonly CatchupLogoCache _logos;
 
         public XtreamCatchupChannel(ILiveTvManager liveTvManager, IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogManager logManager,
             IServerConfigurationManager configurationManager, IServerApplicationHost appHost)
         {
             _liveTv = liveTvManager;
             _appHost = appHost;
+            _logos = new CatchupLogoCache(System.IO.Path.Combine(configurationManager.ApplicationPaths.CachePath, "xtream", "catchup-logos"));
             _http = httpClient;
             _json = jsonSerializer;
             _logger = logManager.GetLogger("XtreamCatchup");
@@ -215,17 +217,21 @@ namespace Emby.Xtream.Catchup
             var options = XtreamTunerSupport.GetOptions(_json, tuner);
             int maxDays = MaxDays(options);
 
-            return ArchiveStreams(catalog, options)
+            var streams = ArchiveStreams(catalog, options)
                 .Where(s => string.Equals(s.CategoryId ?? string.Empty, id.CategoryId ?? string.Empty, StringComparison.Ordinal))
                 .OrderBy(s => s.Num).ThenBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
-                .Select(s =>
-                {
-                    int days = CatchupPlanner.EffectiveDays(s.TvArchiveDuration, maxDays);
-                    var item = Folder(CatchupItemId.ForChannel(tuner.Id, id.CategoryId, s.StreamId).ToString(), s.Name,
-                        days.ToString(CultureInfo.InvariantCulture) + (days == 1 ? " day" : " days") + " of catch-up");
-                    item.ImageUrl = s.StreamIcon;
-                    return item;
-                }).ToList();
+                .ToList();
+
+            var result = new List<ChannelItemInfo>(streams.Count);
+            foreach (var s in streams)
+            {
+                int days = CatchupPlanner.EffectiveDays(s.TvArchiveDuration, maxDays);
+                var item = Folder(CatchupItemId.ForChannel(tuner.Id, id.CategoryId, s.StreamId).ToString(), s.Name,
+                    days.ToString(CultureInfo.InvariantCulture) + (days == 1 ? " day" : " days") + " of catch-up");
+                item.ImageUrl = await Logo(tuner, s, ct).ConfigureAwait(false);
+                result.Add(item);
+            }
+            return result;
         }
 
         private async Task<List<ChannelItemInfo>> BuildDays(TunerHostInfo tuner, CatchupItemId id, CancellationToken ct)
@@ -236,12 +242,13 @@ namespace Emby.Xtream.Catchup
 
             var options = XtreamTunerSupport.GetOptions(_json, tuner);
             int days = CatchupPlanner.EffectiveDays(stream.TvArchiveDuration, MaxDays(options));
+            string logo = await Logo(tuner, stream, ct).ConfigureAwait(false);
             return CatchupPlanner.DayFolders(catalog.Clock, DateTime.UtcNow, days)
                 .Select(d =>
                 {
                     var item = Folder(CatchupItemId.ForDay(tuner.Id, id.CategoryId, id.StreamId, CatchupPlanner.DayId(d)).ToString(),
                         CatchupPlanner.DayLabel(d), null);
-                    item.ImageUrl = stream.StreamIcon;
+                    item.ImageUrl = logo;
                     item.DateModified = CatchupPlanner.DayLabelsRevised;
                     return item;
                 }).ToList();
@@ -263,6 +270,7 @@ namespace Emby.Xtream.Catchup
             var entries = await _epg.GetAsync(tuner.Id + "|" + id.StreamId, EpgTtl,
                 () => client.GetSimpleDataTableAsync(id.StreamId, null, ct), ct).ConfigureAwait(false);
 
+            string logo = await Logo(tuner, stream, ct).ConfigureAwait(false);
             var programmes = CatchupPlanner.ArchivedProgrammes(entries, catalog.Clock, day, DateTime.UtcNow, days);
             var result = new List<ChannelItemInfo>(programmes.Count);
             foreach (var p in programmes)
@@ -282,7 +290,7 @@ namespace Emby.Xtream.Catchup
                     // Emby's "Latest" row on the home screen sorts channel items by DateCreated: newest finished first
                     DateCreated = new DateTimeOffset(DateTime.SpecifyKind(p.StopUtc, DateTimeKind.Utc)),
                     RunTimeTicks = (p.StopUtc - p.StartUtc).Ticks,
-                    ImageUrl = stream.StreamIcon,
+                    ImageUrl = logo,
                     IsLiveStream = false
                 });
             }
@@ -345,6 +353,11 @@ namespace Emby.Xtream.Catchup
             var all = _liveTv.GetTunerHostInfos(XtreamDefaults.TunerType) ?? new List<TunerHostInfo>();
             return all.Where(t => XtreamTunerSupport.GetOptions(_json, t).EnableCatchup).ToList();
         }
+
+        /// <summary>The channel logo as a catch-up picture: padded when its shape would crash the Android TV app (CatchupLogoCache).</summary>
+        private Task<string> Logo(TunerHostInfo tuner, XtreamLiveStream stream, CancellationToken ct) =>
+            _logos.ResolveAsync(stream.StreamIcon,
+                new EmbyHttp(_http, XtreamTunerSupport.GetUserAgent(tuner), XtreamTunerSupport.PluginConfig.HttpTimeoutSeconds), ct);
 
         private static int MaxDays(XtreamTunerOptions options) =>
             options.CatchupMaxDays > 0 ? options.CatchupMaxDays : XtreamTunerSupport.PluginConfig.CatchupMaxDays;
