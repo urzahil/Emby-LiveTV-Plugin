@@ -12,13 +12,16 @@ namespace Emby.Xtream.Catchup
         private int _prefixPosition;
         private readonly int _prefixEnd;
         private readonly Stream _inner;
+        private readonly IDisposable _owner;
 
-        public PrefixedStream(byte[] prefix, int offset, int count, Stream inner)
+        /// <param name="owner">Disposed together with the stream, e.g. the HTTP response <paramref name="inner"/> belongs to.</param>
+        public PrefixedStream(byte[] prefix, int offset, int count, Stream inner, IDisposable owner = null)
         {
             _prefix = prefix;
             _prefixPosition = offset;
             _prefixEnd = offset + count;
             _inner = inner;
+            _owner = owner;
         }
 
         public override bool CanRead => true;
@@ -55,7 +58,11 @@ namespace Emby.Xtream.Catchup
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) _inner.Dispose();
+            if (disposing)
+            {
+                _inner.Dispose();
+                try { _owner?.Dispose(); } catch (Exception) { /* already closed */ }
+            }
             base.Dispose(disposing);
         }
     }

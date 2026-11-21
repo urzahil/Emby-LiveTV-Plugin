@@ -44,6 +44,8 @@ namespace Emby.Xtream.Api
 
         private readonly IHttpClient _http;
         private readonly ILogger _logger;
+        // shared by all requests: windows fetched for seeks (see RangeWindowCache)
+        private static readonly RangeWindowCache Windows = new RangeWindowCache();
 
         public CatchupStreamService(IHttpClient httpClient, ILogManager logManager)
         {
@@ -71,14 +73,14 @@ namespace Emby.Xtream.Api
             ByteRange range = ByteRange.Parse(rangeHeader);
             _label = string.IsNullOrEmpty(rangeHeader) ? "no range" : rangeHeader;
             _clock = System.Diagnostics.Stopwatch.StartNew();
-            if (range != null && range.From == 0) range = range.To.HasValue ? range : null; // "bytes=0-" is a plain read
-
+            // once the layout is known, every range (ffmpeg's opening "bytes=0-" included) is served through the window cache
             if (range != null && entry.StartOffset.HasValue && entry.SeekableLength.HasValue)
             {
                 object ranged = await ServeRange(request.Token, entry, range, ct).ConfigureAwait(false);
                 if (ranged != null) return ranged;
             }
 
+            if (range != null && range.From == 0 && !range.To.HasValue) range = null; // "bytes=0-" is a plain read
             return await ServeFromStart(request.Token, entry, range, ct).ConfigureAwait(false);
         }
 
@@ -150,21 +152,71 @@ namespace Emby.Xtream.Api
         {
             long length = entry.SeekableLength.Value;
             if (range.From >= length) return Result(new MemoryStream(new byte[0]), null, 416, null, "bytes */" + length.ToString(CultureInfo.InvariantCulture));
-
             long last = range.LastByte(length);
-            // clamp before shifting, so a huge end value from the caller cannot overflow
-            HttpResponseInfo response = await Open(token, entry, new ByteRange(range.From, last).ToHeader(entry.StartOffset.Value), ct).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.PartialContent)
+            long shift = entry.StartOffset.Value;
+
+            byte[] window;
+            long windowStart;
+            if (Windows.TryGet(token, range.From, out window, out windowStart))
             {
-                response.Dispose();
-                CatchupStreamRegistry.SetLayout(token, entry.StartOffset.Value, null);
-                entry.SeekableLength = null;
-                _logger.Warn("Catch-up provider ignored a byte range; seeking is not available for this programme");
-                return null;
+                _logger.Info("Catch-up request ({0}): answered from memory, {1} ms after the request arrived", _label, _clock.ElapsedMilliseconds);
             }
+            else
+            {
+                // fetch a whole window, so the next seek probes nearby need no provider request
+                long windowLast = Math.Min(last, range.From + RangeWindowCache.DefaultWindowSize - 1);
+                HttpResponseInfo response = await Open(token, entry, new ByteRange(range.From, windowLast).ToHeader(shift), ct).ConfigureAwait(false);
+                try
+                {
+                    if (response.StatusCode != HttpStatusCode.PartialContent)
+                    {
+                        CatchupStreamRegistry.SetLayout(token, shift, null);
+                        entry.SeekableLength = null;
+                        _logger.Warn("Catch-up provider ignored a byte range; seeking is not available for this programme");
+                        return null;
+                    }
+                    window = await ReadAll(response.Content, (int)(windowLast - range.From + 1), ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    response.Dispose();
+                }
+                windowStart = range.From;
+                Windows.Add(token, windowStart, window);
+            }
+
+            int offset = (int)(range.From - windowStart);
+            int count = (int)Math.Min(window.Length - offset, last - range.From + 1);
+            long after = range.From + count;
+            Func<long, CancellationToken, Task<Stream>> openRest = async (from, token2) =>
+            {
+                HttpResponseInfo rest = await Open(token, entry, new ByteRange(from, last).ToHeader(shift), token2).ConfigureAwait(false);
+                if (rest.StatusCode != HttpStatusCode.PartialContent)
+                {
+                    rest.Dispose();
+                    throw new IOException("Catch-up provider ignored a byte range");
+                }
+                return new PrefixedStream(new byte[0], 0, 0, rest.Content, rest);
+            };
+            var body = new WindowThenStream(window, offset, count, after <= last ? after : (long?)null, openRest);
+
             string contentRange = "bytes " + range.From.ToString(CultureInfo.InvariantCulture) + "-" + last.ToString(CultureInfo.InvariantCulture) +
                                   "/" + length.ToString(CultureInfo.InvariantCulture);
-            return Result(response.Content, response, 206, last - range.From + 1, contentRange);
+            return Result(body, null, 206, last - range.From + 1, contentRange);
+        }
+
+        private static async Task<byte[]> ReadAll(Stream stream, int expected, CancellationToken ct)
+        {
+            var data = new byte[expected];
+            int total = 0;
+            while (total < expected)
+            {
+                int n = await stream.ReadAsync(data, total, expected - total, ct).ConfigureAwait(false);
+                if (n == 0) break;
+                total += n;
+            }
+            if (total < expected) Array.Resize(ref data, total);
+            return data;
         }
 
         private async Task<HttpResponseInfo> Open(string token, CatchupStreamRegistry.Entry entry, string rangeHeader, CancellationToken ct)
