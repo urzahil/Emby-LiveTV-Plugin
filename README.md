@@ -59,13 +59,13 @@ provider onto these channels in Emby if the provider's listings are poor.
 ## Catch-up
 
 Emby's Live TV API has no catch-up concept, so past programmes cannot be started from the guide grid. Instead the
-plugin adds a channel called **IPTV Catch-up** under *Channels* (it also shows up on the home screen like any channel):
+plugin adds a channel called **Catch-up** under *Channels* (it also shows up on the home screen like any channel):
 
 ```
-IPTV Catch-up › [source] › category › channel › day › programme
+Catch-up › [source] › channel › day › programme
 ```
 
-Only channels the provider flags with an archive are listed, going back as far as the provider keeps them (capped by
+Only channels the provider flags with an archive are listed, all categories together, going back as far as the provider keeps them (capped by
 *Maximum catch-up days*). Picking a programme plays it through the provider's timeshift URL, with the start time
 converted to the provider's server timezone as those URLs require.
 
