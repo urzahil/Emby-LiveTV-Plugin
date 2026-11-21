@@ -159,7 +159,7 @@ namespace Emby.Xtream.Api
             long windowStart;
             if (Windows.TryGet(token, range.From, out window, out windowStart))
             {
-                _logger.Info("Catch-up request ({0}): answered from memory, {1} ms after the request arrived", _label, _clock.ElapsedMilliseconds);
+                _logger.Debug("Catch-up request ({0}): answered from memory, {1} ms after the request arrived", _label, _clock.ElapsedMilliseconds);
             }
             else
             {
@@ -245,7 +245,7 @@ namespace Emby.Xtream.Api
                     var opened = System.Diagnostics.Stopwatch.StartNew();
                     HttpResponseInfo response = await _http.GetResponse(options).ConfigureAwait(false);
                     CatchupStreamRegistry.ReplaceActive(token, response);
-                    _logger.Info("Catch-up request ({0}): provider answered {1} to {2} in {3} ms{4}, {5} ms after the request arrived",
+                    _logger.Debug("Catch-up request ({0}): provider answered {1} to {2} in {3} ms{4}, {5} ms after the request arrived",
                         _label, (int)response.StatusCode, rangeHeader ?? "no range", opened.ElapsedMilliseconds,
                         attempt > 0 ? " after " + attempt + " busy retries" : string.Empty, _clock.ElapsedMilliseconds);
                     return response;
@@ -253,7 +253,7 @@ namespace Emby.Xtream.Api
                 catch (OperationCanceledException) { throw; }
                 catch (HttpException ex) when (ex.StatusCode == HttpStatusCode.ServiceUnavailable && attempt < BusyRetries)
                 {
-                    if (attempt == 0) _logger.Info("Catch-up request ({0}): provider busy (503), retrying", _label);
+                    if (attempt == 0) _logger.Debug("Catch-up request ({0}): provider busy (503), retrying", _label);
                     await Task.Delay(BusyRetryDelay, ct).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -319,7 +319,7 @@ namespace Emby.Xtream.Api
                 if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
                 {
                     try { _owner?.Dispose(); } catch (Exception) { /* already closed by a newer request */ }
-                    _log.Info("Catch-up request ({0}) ended: {1} KB served, {2} ms after it arrived", _label, _served / 1024, _clock.ElapsedMilliseconds);
+                    _log.Debug("Catch-up request ({0}) ended: {1} KB served, {2} ms after it arrived", _label, _served / 1024, _clock.ElapsedMilliseconds);
                 }
                 base.Dispose(disposing);
             }
