@@ -316,7 +316,11 @@ namespace Emby.Xtream.Catchup
                 IsInfiniteStream = false,
                 IsRemote = true,
                 RunTimeTicks = TimeSpan.FromSeconds(Math.Max(1, item.StopTs - item.StartTs)).Ticks,
-                SupportsDirectStream = true,
+                // Always go through ffmpeg (it copies the streams when the client can take them). Direct stream makes Emby
+                // proxy the timeshift URL like a static file (HEAD, byte ranges, known length), which providers' timeshift.php
+                // does not support, so clients that pick it — the Android TV app, which plays TS itself — hang on start.
+                // Browsers cannot play TS and always got the ffmpeg path, which is why catch-up worked there.
+                SupportsDirectStream = false,
                 SupportsDirectPlay = false,
                 SupportsTranscoding = true,
                 RequiredHttpHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
