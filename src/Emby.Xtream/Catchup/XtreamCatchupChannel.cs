@@ -28,7 +28,7 @@ namespace Emby.Xtream.Catchup
 {
     /// <summary>
     /// Emby has no catch-up concept in its Live TV API, so provider archives are exposed as a browsable Channel:
-    /// tuner > category > channel > day > programme. Leaf items carry no media sources; the timeshift URL (which contains
+    /// tuner > channel > day > programme (the tuner level only with more than one source). Leaf items carry no media sources; the timeshift URL (which contains
     /// credentials) is built at play time by <see cref="GetChannelItemMediaInfo"/>.
     /// <para>
     /// Emby 4.8 does not call <see cref="GetChannelItems"/> while a user browses: it copies the tree into its library
@@ -43,7 +43,6 @@ namespace Emby.Xtream.Catchup
         private sealed class Catalog
         {
             public DateTime LoadedUtc;
-            public List<XtreamCategory> Categories;
             public List<XtreamLiveStream> Streams;
             public XtreamClock Clock;
         }
@@ -169,7 +168,7 @@ namespace Emby.Xtream.Catchup
         {
             if (id.Kind == CatchupNodeKind.Root)
             {
-                if (tuners.Count == 1) return await BuildCategories(tuners[0], ct).ConfigureAwait(false);
+                if (tuners.Count == 1) return await BuildChannels(tuners[0], null, ct).ConfigureAwait(false);
                 return tuners.Select(t => Folder(CatchupItemId.ForTuner(t.Id).ToString(), t.FriendlyName ?? t.Url, null)).ToList();
             }
 
@@ -179,9 +178,10 @@ namespace Emby.Xtream.Catchup
             switch (id.Kind)
             {
                 case CatchupNodeKind.Tuner:
-                    return await BuildCategories(tuner, ct).ConfigureAwait(false);
+                    return await BuildChannels(tuner, null, ct).ConfigureAwait(false);
                 case CatchupNodeKind.Category:
-                    return await BuildChannels(tuner, id, ct).ConfigureAwait(false);
+                    // no longer offered (channels are listed directly); kept for category folders Emby still has stored
+                    return await BuildChannels(tuner, id.CategoryId ?? string.Empty, ct).ConfigureAwait(false);
                 case CatchupNodeKind.Channel:
                     return await BuildDays(tuner, id, ct).ConfigureAwait(false);
                 case CatchupNodeKind.Day:
@@ -191,34 +191,15 @@ namespace Emby.Xtream.Catchup
             }
         }
 
-        private async Task<List<ChannelItemInfo>> BuildCategories(TunerHostInfo tuner, CancellationToken ct)
-        {
-            var catalog = await GetCatalog(tuner, ct).ConfigureAwait(false);
-            var options = XtreamTunerSupport.GetOptions(_json, tuner);
-            var archived = ArchiveStreams(catalog, options);
-
-            var names = catalog.Categories.ToDictionary(c => c.Id, c => c.Name, StringComparer.Ordinal);
-            return archived
-                .GroupBy(s => s.CategoryId ?? string.Empty)
-                .Select(g => new
-                {
-                    Id = g.Key,
-                    Name = g.Key.Length > 0 && names.ContainsKey(g.Key) ? names[g.Key] : "Other",
-                    Count = g.Count()
-                })
-                .OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase)
-                .Select(c => Folder(CatchupItemId.ForCategory(tuner.Id, c.Id).ToString(), c.Name, c.Count.ToString(CultureInfo.InvariantCulture) + " channels with catch-up"))
-                .ToList();
-        }
-
-        private async Task<List<ChannelItemInfo>> BuildChannels(TunerHostInfo tuner, CatchupItemId id, CancellationToken ct)
+        /// <summary>Channels with catch-up, all categories together unless <paramref name="categoryId"/> is given.</summary>
+        private async Task<List<ChannelItemInfo>> BuildChannels(TunerHostInfo tuner, string categoryId, CancellationToken ct)
         {
             var catalog = await GetCatalog(tuner, ct).ConfigureAwait(false);
             var options = XtreamTunerSupport.GetOptions(_json, tuner);
             int maxDays = MaxDays(options);
 
             var streams = ArchiveStreams(catalog, options)
-                .Where(s => string.Equals(s.CategoryId ?? string.Empty, id.CategoryId ?? string.Empty, StringComparison.Ordinal))
+                .Where(s => categoryId == null || string.Equals(s.CategoryId ?? string.Empty, categoryId, StringComparison.Ordinal))
                 .OrderBy(s => s.Num).ThenBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
 
@@ -226,7 +207,7 @@ namespace Emby.Xtream.Catchup
             foreach (var s in streams)
             {
                 int days = CatchupPlanner.EffectiveDays(s.TvArchiveDuration, maxDays);
-                var item = Folder(CatchupItemId.ForChannel(tuner.Id, id.CategoryId, s.StreamId).ToString(), s.Name,
+                var item = Folder(CatchupItemId.ForChannel(tuner.Id, s.CategoryId ?? string.Empty, s.StreamId).ToString(), s.Name,
                     days.ToString(CultureInfo.InvariantCulture) + (days == 1 ? " day" : " days") + " of catch-up");
                 item.ImageUrl = await Logo(tuner, s, ct).ConfigureAwait(false);
                 result.Add(item);
@@ -383,13 +364,11 @@ namespace Emby.Xtream.Catchup
                 var client = XtreamTunerSupport.CreateClient(_http, tuner, options);
 
                 var account = await client.GetAccountAsync(ct).ConfigureAwait(false);
-                var categories = await client.GetLiveCategoriesAsync(ct).ConfigureAwait(false);
                 var streams = await client.GetLiveStreamsAsync(ct).ConfigureAwait(false);
 
                 var catalog = new Catalog
                 {
                     LoadedUtc = DateTime.UtcNow,
-                    Categories = categories,
                     Streams = streams,
                     Clock = XtreamClock.FromServerInfo(account.ServerInfo)
                 };

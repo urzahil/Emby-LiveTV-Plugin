@@ -160,9 +160,9 @@ Visible only when `PluginConfiguration.EnableCatchupChannel` (default true) and 
 Folder tree (`InternalChannelItemQuery.FolderId`, ids built by `CatchupItemId`):
 
 ```
-root                     -> one folder per tuner  (skipped when exactly one tuner: show its categories directly)
-t|{tunerId}              -> categories that contain at least one channel with tv_archive = 1
-t|{tunerId}|c|{catId}    -> channels with tv_archive = 1 (name, logo, "N days" in overview)
+root                     -> one folder per tuner  (skipped when exactly one tuner: show its channels directly)
+t|{tunerId}              -> all channels with tv_archive = 1, every category together (name, logo, "N days" in overview), sorted by number then name
+...|c|{catId}|s|{streamId} -> channel id; the category is the stream's own and stays in the id (day and programme ids build on it), but there is no category folder
 ...|s|{streamId}         -> day folders, newest first, back to min(tv_archive_duration, CatchupMaxDays), named by date ("Saturday 21 November")
 ...|d|{yyyyMMdd}         -> programmes from get_simple_data_table for that local day where has_archive=1 (or stop < now when provider never sets it) and stop <= now
 leaf  ...|p|{startTs}|{stopTs}|{urlsafe-title}  -> ChannelItemInfo{Type=Media, MediaType=Video, ContentType=Clip, Name="HH:mm Title", Overview=description, StartDate, RunTimeTicks, ImageUrl=channel logo, IsLiveStream=false}
