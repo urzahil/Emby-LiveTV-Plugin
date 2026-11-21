@@ -6,12 +6,16 @@ using Emby.Xtream.Catchup;
 using Emby.Xtream.Xtream;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Common.Net;
+using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Logging;
 using MediaBrowser.Model.Services;
 
 namespace Emby.Xtream.Api
 {
+    // Emby makes every route require a signed-in user unless it is marked [Unauthenticated]. Emby's own ffmpeg sends no
+    // token, so without this it gets 401. CatchupStreamService checks loopback + token instead.
     [Route("/Xtream/Catchup/{Token}", "GET", IsHidden = true, Summary = "Catch-up stream for Emby's own ffmpeg (loopback only)")]
+    [Unauthenticated]
     public class GetCatchupStream
     {
         public string Token { get; set; }
