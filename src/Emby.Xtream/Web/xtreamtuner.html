@@ -42,6 +42,17 @@
                 <div class="verticalSection">
                     <h3 style="margin-bottom:0;">${XtreamCategories}</h3>
                     <div class="fieldDescription">${XtreamCategoriesHelp}</div>
+                    <div class="inputContainer" style="margin-top:.5em;">
+                        <input is="emby-input" type="text" class="txtCategoryFilter" label="${XtreamFilterCategories}" autocomplete="off" />
+                    </div>
+                    <div style="margin-bottom:.5em;">
+                        <button is="emby-button" type="button" class="raised btnSelectAllCategories">
+                            <span>${XtreamSelectAll}</span>
+                        </button>
+                        <button is="emby-button" type="button" class="raised btnClearAllCategories">
+                            <span>${XtreamClearAll}</span>
+                        </button>
+                    </div>
                     <div class="categoryList" style="margin-top:.5em;"></div>
                 </div>
 

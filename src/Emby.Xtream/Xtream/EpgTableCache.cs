@@ -58,6 +58,18 @@ namespace Emby.Xtream.Xtream
             }
         }
 
-        public void Clear() => _items.Clear();
+        public void Clear()
+        {
+            _items.Clear();
+            // a lock nobody holds can go; one that is held stays until its owner is done, and is recreated on demand
+            foreach (var kv in _keyLocks)
+            {
+                if (kv.Value.CurrentCount == 1)
+                {
+                    SemaphoreSlim removed;
+                    _keyLocks.TryRemove(kv.Key, out removed);
+                }
+            }
+        }
     }
 }

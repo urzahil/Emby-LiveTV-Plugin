@@ -12,10 +12,13 @@ Endpoints (credentials default to test/test):
     /streaming/timeshift.php?username=&password=&stream=<id>&start=YYYY-MM-DD:HH-MM&duration=<minutes>
     /timeshift/<user>/<pass>/<minutes>/<YYYY-MM-DD:HH-MM>/<id>.ts
 
-Streams serve a looping MPEG-TS placeholder from ``sample.ts`` next to this script. Create one, for example:
+Live streams serve a looping MPEG-TS placeholder from ``sample.ts`` next to this script. Create one, for example:
 
     ffmpeg -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine=frequency=440 \\
            -t 10 -c:v libx264 -preset veryfast -b:v 600k -c:a aac -f mpegts sample.ts
+
+Catch-up (timeshift) URLs serve a finite file of ``duration`` minutes with Content-Length and byte-range support
+(``Range`` -> 206 Partial Content), so seeking can be tested end to end; it starts mid-packet (--timeshift-offset).
 
 Without sample.ts the stream endpoints answer 404 with a hint; everything else still works.
 The provider's "server timezone" is Europe/Berlin, to exercise the plugin's timezone conversion.
@@ -142,11 +145,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self.authed(q.get("username"), q.get("password")):
                 return self.send_bytes(403, b"forbidden\n", "text/plain")
             minutes = int(q.get("duration", "60") or 60)
-            return self.stream(minutes * 60)
+            return self.timeshift(minutes)
         if len(parts) == 6 and parts[0] == "timeshift":
             if not self.authed(parts[1], parts[2]):
                 return self.send_bytes(403, b"forbidden\n", "text/plain")
-            return self.stream(int(parts[3]) * 60)
+            return self.timeshift(int(parts[3]))
         if len(parts) == 4 and parts[0] == "live":
             return self.live(parts[1], parts[2], parts[3])
         if len(parts) == 3:  # legacy /user/pass/id
@@ -250,6 +253,81 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(200, body, "application/vnd.apple.mpegurl")
         return self.stream(None)
 
+    def timeshift(self, minutes):
+        """A finite catch-up file of `minutes` of sample.ts: Content-Length, Accept-Ranges and 206 Partial Content.
+
+        Like real providers it starts in the middle of a TS packet (--timeshift-offset bytes in), which is what the
+        plugin's start finder has to cope with. A client that seeks (Range: bytes=N-) gets exactly that slice."""
+        if not os.path.isfile(SAMPLE):
+            return self.stream(None)  # answers with the 404 hint
+        with open(SAMPLE, "rb") as f:
+            data = f.read()
+        if not data:
+            return self.send_bytes(404, b"sample.ts is empty\n", "text/plain")
+        total = max(188, int(max(1, minutes) * 60 * ARGS.rate))
+        offset = ARGS.timeshift_offset
+
+        def byte_range(first, last):
+            # position p of the file is byte (p + offset) of the looped sample
+            out = bytearray()
+            pos = first
+            while pos <= last:
+                start = (pos + offset) % len(data)
+                take = min(last - pos + 1, len(data) - start)
+                out += data[start:start + take]
+                pos += take
+            return bytes(out)
+
+        first, last = 0, total - 1
+        status = 200
+        header = self.headers.get("Range")
+        if header and header.lower().startswith("bytes=") and "," not in header:
+            spec = header[6:].strip()
+            lo, _, hi = spec.partition("-")
+            try:
+                if lo == "":  # suffix range: the last N bytes
+                    first, last = max(0, total - int(hi)), total - 1
+                else:
+                    first = int(lo)
+                    last = min(int(hi), total - 1) if hi else total - 1
+            except ValueError:
+                first, last = 0, total - 1
+            else:
+                if first >= total or last < first:
+                    self.send_response(416)
+                    self.send_header("Content-Range", "bytes */%d" % total)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = 206
+
+        self.send_response(status)
+        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(last - first + 1))
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (first, last, total))
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+
+        chunk = 188 * 56
+        started = time.time()
+        sent = 0
+        try:
+            pos = first
+            while pos <= last:
+                block = byte_range(pos, min(last, pos + chunk - 1))
+                self.wfile.write(block)
+                self.wfile.flush()
+                pos += len(block)
+                sent += len(block)
+                ahead = sent / float(ARGS.rate) - (time.time() - started)
+                if ahead > 0:
+                    time.sleep(min(ahead, 1.0))
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def stream(self, max_seconds):
         """Loop sample.ts, paced to --rate bytes/second; stop after max_seconds when given."""
         if not os.path.isfile(SAMPLE):
@@ -298,6 +376,8 @@ def main():
     p.add_argument("--user", default="test")
     p.add_argument("--password", default="test")
     p.add_argument("--rate", type=int, default=250000, help="stream pacing in bytes/second (default 250000)")
+    p.add_argument("--timeshift-offset", type=int, default=100,
+                   help="catch-up files start this many bytes into a TS packet, like real providers (default 100)")
     ARGS = p.parse_args()
 
     server = ThreadingHTTPServer((ARGS.host, ARGS.port), Handler)

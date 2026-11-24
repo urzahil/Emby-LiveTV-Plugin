@@ -100,6 +100,17 @@ namespace Emby.Xtream.Catchup
             }
         }
 
+        /// <summary>Forgets <paramref name="connection"/> as the active one of the token (it is closed), without disposing it.</summary>
+        public static void ReleaseActive(string token, IDisposable connection)
+        {
+            if (string.IsNullOrEmpty(token) || connection == null) return;
+            lock (ByToken)
+            {
+                IDisposable current;
+                if (ActiveByToken.TryGetValue(token, out current) && ReferenceEquals(current, connection)) ActiveByToken.Remove(token);
+            }
+        }
+
         private static void Purge(DateTime utcNow)
         {
             List<string> expired = null;
@@ -110,7 +121,12 @@ namespace Emby.Xtream.Catchup
             {
                 TokenByUrl.Remove(ByToken[token].Url);
                 ByToken.Remove(token);
-                ActiveByToken.Remove(token);
+                IDisposable active;
+                if (ActiveByToken.TryGetValue(token, out active))
+                {
+                    ActiveByToken.Remove(token);
+                    try { active.Dispose(); } catch (Exception) { /* already closed */ }
+                }
             }
         }
 

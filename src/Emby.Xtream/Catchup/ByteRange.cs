@@ -15,6 +15,9 @@ namespace Emby.Xtream.Catchup
             To = to;
         }
 
+        // a range is shifted by the start offset (ToHeader), so leave room for that
+        private const long MaxPosition = long.MaxValue / 2;
+
         /// <summary>Parses a Range header; null for none, multiple ranges, suffix ranges or anything malformed.</summary>
         public static ByteRange Parse(string header)
         {
@@ -26,11 +29,11 @@ namespace Emby.Xtream.Catchup
             int dash = spec.IndexOf('-');
             if (dash <= 0) return null; // "-500" (suffix) is not supported
             long from;
-            if (!long.TryParse(spec.Substring(0, dash).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out from)) return null;
+            if (!long.TryParse(spec.Substring(0, dash).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out from) || from > MaxPosition) return null;
             string toText = spec.Substring(dash + 1).Trim();
             if (toText.Length == 0) return new ByteRange(from, null);
             long to;
-            if (!long.TryParse(toText, NumberStyles.None, CultureInfo.InvariantCulture, out to) || to < from) return null;
+            if (!long.TryParse(toText, NumberStyles.None, CultureInfo.InvariantCulture, out to) || to < from || to > MaxPosition) return null;
             return new ByteRange(from, to);
         }
 

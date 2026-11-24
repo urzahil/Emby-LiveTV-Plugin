@@ -57,6 +57,7 @@ namespace Emby.Xtream.Api
 
         // per request (Emby creates a service instance per request): what was asked and since when, for the timing log
         private string _label = string.Empty;
+        private string _token = string.Empty;
         private System.Diagnostics.Stopwatch _clock = new System.Diagnostics.Stopwatch();
 
         public async Task<object> Get(GetCatchupStream request)
@@ -73,6 +74,7 @@ namespace Emby.Xtream.Api
             ByteRange range = ByteRange.Parse(rangeHeader);
             _label = string.IsNullOrEmpty(rangeHeader) ? "no range" : rangeHeader;
             _clock = System.Diagnostics.Stopwatch.StartNew();
+            _token = request.Token;
             // once the layout is known, every range (ffmpeg's opening "bytes=0-" included) is served through the window cache
             if (range != null && entry.StartOffset.HasValue && entry.SeekableLength.HasValue)
             {
@@ -129,22 +131,54 @@ namespace Emby.Xtream.Api
                 throw;
             }
 
+            if (entry.SeekableLength.HasValue)
+            {
+                // ffmpeg probes the start of the stream again right after opening it: what was read to find the start offset
+                // answers those probes from memory
+                int seedLength = Math.Min(count - (int)start, RangeWindowCache.DefaultWindowSize);
+                if (seedLength > 0)
+                {
+                    var seed = new byte[seedLength];
+                    Buffer.BlockCopy(buffered, (int)start, seed, 0, seedLength);
+                    Windows.Add(token, 0, seed);
+                }
+            }
+
             if (range != null && entry.SeekableLength.HasValue)
             {
                 // the first request was already a seek: the layout is known now, reopen at the right place
                 response.Dispose();
                 object ranged = await ServeRange(token, entry, range, ct).ConfigureAwait(false);
                 if (ranged != null) return ranged;
+
+                // the provider ignored the range: serve the whole programme, still from the start offset
                 response = await Open(token, entry, null, ct).ConfigureAwait(false);
+                try
+                {
+                    await SkipAsync(response.Content, start, ct).ConfigureAwait(false);
+                }
+                catch
+                {
+                    response.Dispose();
+                    throw;
+                }
                 return Result(response.Content, response, 200, null, null);
             }
 
+            // here the request is not a range request (or the provider cannot seek): a plain read from the start offset
             var body = new PrefixedStream(buffered, (int)start, count - (int)start, response.Content);
-            if (!entry.SeekableLength.HasValue) return Result(body, response, 200, null, null);
-            long length = entry.SeekableLength.Value;
-            return range == null
-                ? Result(body, response, 200, length, null)
-                : Result(body, response, 206, length, "bytes 0-" + (length - 1).ToString(CultureInfo.InvariantCulture) + "/" + length.ToString(CultureInfo.InvariantCulture));
+            return Result(body, response, 200, entry.SeekableLength, null);
+        }
+
+        private static async Task SkipAsync(Stream stream, long bytes, CancellationToken ct)
+        {
+            var scratch = new byte[81920];
+            while (bytes > 0)
+            {
+                int n = await stream.ReadAsync(scratch, 0, (int)Math.Min(scratch.Length, bytes), ct).ConfigureAwait(false);
+                if (n == 0) return;
+                bytes -= n;
+            }
         }
 
         /// <summary>Serves a byte range of the served stream from the same range of the provider file; null if the provider did not honour it.</summary>
@@ -179,10 +213,21 @@ namespace Emby.Xtream.Api
                 }
                 finally
                 {
+                    CatchupStreamRegistry.ReleaseActive(token, response);
                     response.Dispose();
                 }
                 windowStart = range.From;
                 Windows.Add(token, windowStart, window);
+
+                if (window.Length < windowLast - range.From + 1)
+                {
+                    // the provider's file ends before the length it advertised: serve what exists, and remember the real length
+                    length = range.From + window.Length;
+                    entry.SeekableLength = length;
+                    CatchupStreamRegistry.SetLayout(token, shift, length);
+                    if (window.Length == 0) return Result(new MemoryStream(new byte[0]), null, 416, null, "bytes */" + length.ToString(CultureInfo.InvariantCulture));
+                    last = length - 1;
+                }
             }
 
             int offset = (int)(range.From - windowStart);
@@ -196,7 +241,7 @@ namespace Emby.Xtream.Api
                     rest.Dispose();
                     throw new IOException("Catch-up provider ignored a byte range");
                 }
-                return new PrefixedStream(new byte[0], 0, 0, rest.Content, rest);
+                return new PrefixedStream(new byte[0], 0, 0, rest.Content, new ActiveConnection(token, rest));
             };
             var body = new WindowThenStream(window, offset, count, after <= last ? after : (long?)null, openRest);
 
@@ -274,17 +319,37 @@ namespace Emby.Xtream.Api
 
         private TsResponse Result(Stream body, IDisposable owner, int status, long? contentLength, string contentRange)
         {
-            var result = new TsResponse(body, owner, _logger, _label, _clock) { Status = status };
+            var result = new TsResponse(body, owner, _token, _logger, _label, _clock) { Status = status };
             if (contentLength.HasValue || contentRange != null) result.Headers["Accept-Ranges"] = "bytes";
             if (contentLength.HasValue) result.Headers["Content-Length"] = contentLength.Value.ToString(CultureInfo.InvariantCulture);
             if (contentRange != null) result.Headers["Content-Range"] = contentRange;
             return result;
         }
 
+        /// <summary>A provider response that also leaves the registry's "active connection" slot when it is closed.</summary>
+        private sealed class ActiveConnection : IDisposable
+        {
+            private readonly string _token;
+            private readonly HttpResponseInfo _response;
+
+            public ActiveConnection(string token, HttpResponseInfo response)
+            {
+                _token = token;
+                _response = response;
+            }
+
+            public void Dispose()
+            {
+                CatchupStreamRegistry.ReleaseActive(_token, _response);
+                _response.Dispose();
+            }
+        }
+
         /// <summary>The response body plus the status and headers Emby writes before copying it.</summary>
         private sealed class TsResponse : PrefixedStream, IHttpResult
         {
             private readonly IDisposable _owner;
+            private readonly string _token;
             private readonly ILogger _log;
             private readonly string _label;
             private readonly System.Diagnostics.Stopwatch _clock;
@@ -292,9 +357,10 @@ namespace Emby.Xtream.Api
             private int _disposed;
 
             /// <param name="owner">The provider response the body belongs to; released with the body, so its connection is not left open.</param>
-            public TsResponse(Stream body, IDisposable owner, ILogger log, string label, System.Diagnostics.Stopwatch clock) : base(new byte[0], 0, 0, body)
+            public TsResponse(Stream body, IDisposable owner, string token, ILogger log, string label, System.Diagnostics.Stopwatch clock) : base(new byte[0], 0, 0, body)
             {
                 _owner = owner;
+                _token = token;
                 _log = log;
                 _label = label;
                 _clock = clock;
@@ -318,6 +384,8 @@ namespace Emby.Xtream.Api
             {
                 if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
                 {
+                    // the registry must not keep the closed response
+                    if (_owner != null) CatchupStreamRegistry.ReleaseActive(_token, _owner);
                     try { _owner?.Dispose(); } catch (Exception) { /* already closed by a newer request */ }
                     _log.Debug("Catch-up request ({0}) ended: {1} KB served, {2} ms after it arrived", _label, _served / 1024, _clock.ElapsedMilliseconds);
                 }

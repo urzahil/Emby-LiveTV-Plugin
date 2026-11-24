@@ -148,10 +148,15 @@ namespace Emby.Xtream.Tests
                 Assert.Null(await cache.ResolveAsync("http://logos/wide.jpg", new BytesHttp(Logo("wide.jpg")), CancellationToken.None));
                 Assert.Null(await cache.ResolveAsync("  ", wide, CancellationToken.None));
 
-                // download failure keeps the URL and retries next time
+                // download failure keeps the URL; it is not retried at once (dead logos must not stall every listing), but later
+                var now = DateTime.UtcNow;
+                var clocked = new CatchupLogoCache(dir, () => now);
                 var failing = new BytesHttp(null);
-                Assert.Equal("http://logos/down.png", await cache.ResolveAsync("http://logos/down.png", failing, CancellationToken.None));
-                await cache.ResolveAsync("http://logos/down.png", failing, CancellationToken.None);
+                Assert.Equal("http://logos/down.png", await clocked.ResolveAsync("http://logos/down.png", failing, CancellationToken.None));
+                Assert.Equal("http://logos/down.png", await clocked.ResolveAsync("http://logos/down.png", failing, CancellationToken.None));
+                Assert.Equal(1, failing.Calls);
+                now = now.AddHours(1);
+                await clocked.ResolveAsync("http://logos/down.png", failing, CancellationToken.None);
                 Assert.Equal(2, failing.Calls);
             }
             finally

@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [ main, 'feature/**', 'fix/**' ]
+    tags: [ 'v*' ]
   pull_request:
 
 jobs:
@@ -27,3 +28,30 @@ jobs:
           name: Emby.Xtream
           path: src/Emby.Xtream/bin/Release/netstandard2.0/Emby.Xtream.dll
           if-no-files-found: error
+
+  release:
+    # a v* tag publishes the plugin dll as a GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the project version
+        run: |
+          version=$(sed -n 's|.*<Version>\(.*\)</Version>.*|\1|p' src/Emby.Xtream/Emby.Xtream.csproj | head -n1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match <Version>$version</Version> in Emby.Xtream.csproj" >&2
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Emby.Xtream
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" Emby.Xtream.dll --title "$GITHUB_REF_NAME" --generate-notes --verify-tag

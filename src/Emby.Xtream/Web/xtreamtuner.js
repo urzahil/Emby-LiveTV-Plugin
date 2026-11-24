@@ -40,6 +40,30 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
         return list;
     }
 
+    // Hides the categories that do not match the filter box (case-insensitive substring).
+    function applyCategoryFilter(view) {
+        var text = view.querySelector('.txtCategoryFilter').value.trim().toLowerCase();
+        var wrappers = view.querySelectorAll('.categoryList .checkboxContainer');
+        for (var i = 0; i < wrappers.length; i++) {
+            var name = (wrappers[i].textContent || '').toLowerCase();
+            wrappers[i].classList.toggle('hide', text !== '' && name.indexOf(text) === -1);
+        }
+    }
+
+    // Ticks or clears the categories that are shown, so "select all" after a filter only takes the matches.
+    function setShownCategories(view, checked) {
+        var wrappers = view.querySelectorAll('.categoryList .checkboxContainer');
+        for (var i = 0; i < wrappers.length; i++) {
+            if (wrappers[i].classList.contains('hide')) {
+                continue;
+            }
+            var box = wrappers[i].querySelector('.chkCategory');
+            if (box) {
+                box.checked = checked;
+            }
+        }
+    }
+
     function renderCategories(view, categories, selected) {
         var container = view.querySelector('.categoryList');
         container.innerHTML = '';
@@ -72,6 +96,7 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
             wrapper.appendChild(label);
             container.appendChild(wrapper);
         });
+        applyCategoryFilter(view);
     }
 
     function loadCategories(view, selected) {
@@ -117,8 +142,34 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
         if (!params.username || params.password == null) {
             return null;
         }
-        var url = value.substring(0, q).replace(/\/(get|player_api|xmltv|panel_api)\.php$/i, '').replace(/\/+$/, '');
-        return { url: url, username: params.username, password: params.password };
+        return { url: normalizeBaseUrl(value.substring(0, q)), username: params.username, password: params.password };
+    }
+
+    // Same rules as XtreamCredentials.NormalizeBaseUrl: add a missing http://, drop query/fragment, and cut the path at the
+    // first panel endpoint (a sub-path the panel lives under is kept).
+    function normalizeBaseUrl(url) {
+        url = url.trim();
+        if (!url) {
+            return url;
+        }
+        if (url.indexOf('://') < 0) {
+            url = 'http://' + url;
+        }
+        var cut = url.search(/[?#]/);
+        if (cut >= 0) {
+            url = url.substring(0, cut);
+        }
+        var endpoints = ['/player_api.php', '/get.php', '/xmltv.php', '/panel_api.php', '/live/', '/streaming/', '/timeshift/'];
+        var from = url.indexOf('://') + 3;
+        var lower = url.toLowerCase();
+        for (var i = 0; i < endpoints.length; i++) {
+            var idx = lower.indexOf(endpoints[i], from);
+            if (idx >= 0) {
+                url = url.substring(0, idx);
+                break;
+            }
+        }
+        return url.replace(/\/+$/, '');
     }
 
     function onServerUrlChange() {
@@ -134,6 +185,8 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
 
     function onTestClick() {
         var view = this.view;
+        // a pasted M3U link may not have triggered the change event yet; without this the categories are not loaded
+        onServerUrlChange.call(this);
         var result = view.querySelector('.testResult');
         var args = getConnectionArgs(view);
 
@@ -202,6 +255,10 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
             if (instance.params.id) {
                 loadCategories(view, selected);
             }
+        }, function () {
+            alertText({
+                text: globalize.translate('XtreamLoadFailed')
+            });
         });
     }
 
@@ -253,6 +310,7 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
 
             ApiClient.saveTunerHostConfiguration(info).then(function (result) {
 
+                loading.hide();
                 formHelper.handleConfigurationSavedResponse();
 
                 appRouter.show(appRouter.getRouteUrl('LiveTVSetup', {
@@ -266,6 +324,13 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
                 alertText({
                     text: globalize.translate('ErrorSavingTvProvider')
                 });
+            });
+        }, function () {
+            // the spinner must not stay up when the saved configuration cannot even be read
+            loading.hide();
+
+            alertText({
+                text: globalize.translate('ErrorSavingTvProvider')
             });
         });
     }
@@ -284,6 +349,9 @@ define(['baseView', 'globalize', 'loading', 'appRouter', 'formHelper', 'emby-inp
         view.querySelector('form').addEventListener('submit', onSubmit.bind(this));
         view.querySelector('.btnTest').addEventListener('click', onTestClick.bind(this));
         view.querySelector('.txtServerUrl').addEventListener('change', onServerUrlChange.bind(this));
+        view.querySelector('.txtCategoryFilter').addEventListener('input', function () { applyCategoryFilter(view); });
+        view.querySelector('.btnSelectAllCategories').addEventListener('click', function () { setShownCategories(view, true); });
+        view.querySelector('.btnClearAllCategories').addEventListener('click', function () { setShownCategories(view, false); });
         view.querySelector('.chkImportGuideData').addEventListener('change', function () { updateVisibility(view); });
         view.querySelector('.chkEnableCatchup').addEventListener('change', function () { updateVisibility(view); });
     }

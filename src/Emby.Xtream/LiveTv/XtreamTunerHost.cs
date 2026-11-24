@@ -36,6 +36,8 @@ namespace Emby.Xtream.LiveTv
         private readonly EpgTableCache _apiEpg = new EpgTableCache(4);
         private readonly Dictionary<string, ChannelIndex> _indexes = new Dictionary<string, ChannelIndex>(StringComparer.OrdinalIgnoreCase);
         private readonly object _indexGate = new object();
+        // server_info per tuner, for panels whose EPG lists carry local times only
+        private readonly Dictionary<string, XtreamServerInfo> _serverInfos = new Dictionary<string, XtreamServerInfo>(StringComparer.OrdinalIgnoreCase);
 
         public XtreamTunerHost(IServerApplicationHost applicationHost, IHttpClient httpClient)
             : base(applicationHost)
@@ -57,6 +59,7 @@ namespace Emby.Xtream.LiveTv
         {
             _guideCache.Clear();
             _apiEpg.Clear();
+            lock (_indexGate) _serverInfos.Clear();
         }
 
         public override TunerHostInfo GetDefaultConfiguration()
@@ -245,7 +248,9 @@ namespace Emby.Xtream.LiveTv
             {
                 string key = tuner.Id + "|" + tunerChannelId;
                 var entries = await _apiEpg.GetAsync(key, ttl,
-                    () => client.GetSimpleDataTableAsync(tunerChannelId, null, cancellationToken), cancellationToken).ConfigureAwait(false);
+                    async () => await client.GetSimpleDataTableAsync(tunerChannelId,
+                        await GetServerInfoAsync(tuner, client, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false),
+                    cancellationToken).ConfigureAwait(false);
 
                 return entries
                     .Where(e => e.StopUtc > startDateUtc.UtcDateTime && e.StartUtc < endDateUtc.UtcDateTime)
@@ -263,7 +268,9 @@ namespace Emby.Xtream.LiveTv
             if (!index.EpgIdByStreamId.TryGetValue(tunerChannelId, out epgId) || string.IsNullOrEmpty(epgId))
                 return new List<ProgramInfo>();
 
-            var all = await _guideCache.GetAsync(tuner.Id, client, index.EpgIds, index.Signature, ttl, plugin.GuideDays, cancellationToken).ConfigureAwait(false);
+            // the cached guide depends on where it came from, so a changed URL must not reuse it
+            string cacheKey = tuner.Id + "_" + ShortHash.Of(tuner.Url);
+            var all = await _guideCache.GetAsync(cacheKey, client, index.EpgIds, index.Signature, ttl, plugin.GuideDays, cancellationToken).ConfigureAwait(false);
 
             List<XmlTvProgram> programs;
             if (!all.TryGetValue(epgId, out programs)) return new List<ProgramInfo>();
@@ -307,7 +314,33 @@ namespace Emby.Xtream.LiveTv
         private void InvalidateIndex(TunerHostInfo tuner)
         {
             if (string.IsNullOrEmpty(tuner.Id)) return;
-            lock (_indexGate) _indexes.Remove(tuner.Id);
+            lock (_indexGate)
+            {
+                _indexes.Remove(tuner.Id);
+                _serverInfos.Remove(tuner.Id);
+            }
+        }
+
+        private async Task<XtreamServerInfo> GetServerInfoAsync(TunerHostInfo tuner, XtreamClient client, CancellationToken ct)
+        {
+            lock (_indexGate)
+            {
+                XtreamServerInfo cached;
+                if (_serverInfos.TryGetValue(tuner.Id, out cached)) return cached;
+            }
+            try
+            {
+                var account = await client.GetAccountAsync(ct).ConfigureAwait(false);
+                lock (_indexGate) _serverInfos[tuner.Id] = account.ServerInfo;
+                return account.ServerInfo;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // not fatal: times without timestamps are then read as UTC; try again on the next load
+                Logger.Warn("Could not read the Xtream server time zone: {0}", XtreamUrlBuilder.SanitizeText(ex.Message));
+                return null;
+            }
         }
 
         private async Task<ChannelIndex> GetIndexAsync(TunerHostInfo tuner, XtreamTunerOptions options, CancellationToken ct)
@@ -336,7 +369,7 @@ namespace Emby.Xtream.LiveTv
                 OptionsKey = optionsKey,
                 EpgIdByStreamId = map,
                 EpgIds = ids,
-                Signature = channels.Count.ToString(CultureInfo.InvariantCulture) + ":" + ids.Count.ToString(CultureInfo.InvariantCulture)
+                Signature = ShortHash.ChannelSignature(tuner.Url, ids)
             };
             lock (_indexGate) _indexes[tuner.Id] = index;
             return index;

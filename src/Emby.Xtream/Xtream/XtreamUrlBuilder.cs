@@ -121,17 +121,19 @@ namespace Emby.Xtream.Xtream
                 string path = qm >= 0 ? result.Substring(pathStart, qm - pathStart) : result.Substring(pathStart);
                 string tail = qm >= 0 ? result.Substring(qm) : string.Empty;
                 var segs = path.Split('/');
-                // segs[0] is "" (leading slash)
-                if (segs.Length >= 4)
+                // segs[0] is "" (leading slash). A panel under a sub-path (http://host/panel/live/U/P/...) has the kind
+                // further in, so look at every segment. Every match is masked: a sub-path or user that is itself called "live" must not hide the real credentials.
+                var original = (string[])segs.Clone();
+                for (int i = 1; i + 2 < segs.Length; i++)
                 {
-                    string kind = segs[1].ToLowerInvariant();
+                    string kind = original[i].ToLowerInvariant();
                     if (kind == "live" || kind == "timeshift" || kind == "movie" || kind == "series")
                     {
-                        segs[2] = "***";
-                        segs[3] = "***";
-                        path = string.Join("/", segs);
+                        segs[i + 1] = "***";
+                        segs[i + 2] = "***";
                     }
                 }
+                path = string.Join("/", segs);
                 result = result.Substring(0, pathStart) + path + tail;
             }
             return result;

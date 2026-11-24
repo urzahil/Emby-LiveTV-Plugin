@@ -20,6 +20,7 @@ namespace Emby.Xtream.LiveTv
         {
             public DateTime LoadedUtc;
             public string Signature;
+            public int GuideDays;
             public Dictionary<string, List<XmlTvProgram>> Programs;
         }
 
@@ -55,7 +56,7 @@ namespace Emby.Xtream.LiveTv
 
         /// <summary>
         /// Returns programmes per epg channel id. <paramref name="signature"/> identifies the set of imported channels;
-        /// a change forces a re-parse (the downloaded file is reused when still fresh).
+        /// a change (or a change of <paramref name="guideDays"/>) forces a re-parse (the downloaded file is reused when still fresh).
         /// </summary>
         public async Task<Dictionary<string, List<XmlTvProgram>>> GetAsync(
             string tunerId, XtreamClient client, ISet<string> channelIds, string signature, TimeSpan ttl, int guideDays, CancellationToken ct)
@@ -68,7 +69,7 @@ namespace Emby.Xtream.LiveTv
                 lock (_gate) _entries.TryGetValue(tunerId, out entry);
 
                 DateTime now = DateTime.UtcNow;
-                if (entry != null && now - entry.LoadedUtc < ttl && entry.Signature == signature) return entry.Programs;
+                if (entry != null && now - entry.LoadedUtc < ttl && entry.Signature == signature && entry.GuideDays == guideDays) return entry.Programs;
 
                 string path = FilePath(tunerId);
                 bool fileFresh = false;
@@ -100,7 +101,7 @@ namespace Emby.Xtream.LiveTv
 
                 lock (_gate)
                 {
-                    _entries[tunerId] = new Entry { LoadedUtc = now, Signature = signature, Programs = programs };
+                    _entries[tunerId] = new Entry { LoadedUtc = now, Signature = signature, GuideDays = guideDays, Programs = programs };
                 }
                 return programs;
             }
