@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Emby.Xtream.Catchup;
 using Emby.Xtream.Xtream;
 using Emby.Xtream.Xtream.XmlTv;
 using MediaBrowser.Common.Extensions;
@@ -159,7 +160,7 @@ namespace Emby.Xtream.LiveTv
                     Id = CreateEmbyChannelId(tuner, s.StreamId),
                     Name = s.Name,
                     Number = (s.Num > 0 ? s.Num : ordinal).ToString(CultureInfo.InvariantCulture),
-                    ImageUrl = s.StreamIcon,
+                    ImageUrl = s.StreamIcon != null && LogoUrlPolicy.IsAllowedWithoutDns(s.StreamIcon) ? s.StreamIcon : null,
                     ChannelType = ChannelType.TV,
                     Path = client.Urls.Live(s.StreamId, ext),
                     TunerChannelId = s.EpgChannelId,

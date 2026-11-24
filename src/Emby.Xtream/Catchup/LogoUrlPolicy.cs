@@ -11,7 +11,7 @@ namespace Emby.Xtream.Catchup
     /// http(s) URLs are fetched, and not ones that point at the server itself or at link-local addresses (cloud metadata
     /// services, local admin ports). Private LAN addresses stay allowed, since a provider behind a local proxy is normal.
     /// <para>Names are resolved here, but the HTTP client resolves again, so this narrows the exposure rather than closing it
-    /// (DNS rebinding and redirects are not covered).</para>
+    /// (DNS rebinding and redirects are not covered: Emby's HTTP client exposes no way to turn redirects off).</para>
     /// </summary>
     public static class LogoUrlPolicy
     {
@@ -35,11 +35,14 @@ namespace Emby.Xtream.Catchup
             if (address.AddressFamily == AddressFamily.InterNetwork)
             {
                 byte[] b = address.GetAddressBytes();
-                return b[0] == 0 || (b[0] == 169 && b[1] == 254);
+                // 0/8, link-local (cloud metadata), and 100.64/10 (carrier-grade NAT, used by some cloud metadata services)
+                return b[0] == 0 || (b[0] == 169 && b[1] == 254) || (b[0] == 100 && b[1] >= 64 && b[1] <= 127);
             }
             if (address.AddressFamily == AddressFamily.InterNetworkV6)
             {
-                return address.Equals(IPAddress.IPv6Any) || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal;
+                // fc00::/7 (unique local) holds AWS's IPv6 metadata address, so it is blocked with the rest
+                return address.Equals(IPAddress.IPv6Any) || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal ||
+                       (address.GetAddressBytes()[0] & 0xFE) == 0xFC;
             }
             return true;
         }
@@ -48,6 +51,15 @@ namespace Emby.Xtream.Catchup
         {
             host = host.TrimEnd('.');
             return host.Equals("localhost", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Like <see cref="IsAllowedAsync"/> but without resolving names: literal addresses and "localhost" only.</summary>
+        public static bool IsAllowedWithoutDns(string url)
+        {
+            Uri uri;
+            if (!TryParse(url, out uri) || IsBlockedHostName(uri.Host)) return false;
+            IPAddress literal;
+            return !IPAddress.TryParse(uri.Host.Trim('[', ']'), out literal) || !IsBlockedAddress(literal);
         }
 
         /// <summary>True when the URL is http(s) and its host is neither blocked by name nor resolves to a blocked address.</summary>

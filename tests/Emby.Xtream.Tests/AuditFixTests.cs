@@ -96,6 +96,13 @@ namespace Emby.Xtream.Tests
         }
 
         [Fact]
+        public void ASlashOnlyInTheQueryDoesNotThrow()
+        {
+            Assert.Equal("http://h:8080?username=***", XtreamUrlBuilder.Sanitize("http://h:8080?username=u"));
+            Assert.Equal("http://h:8080?x=/y&password=***", XtreamUrlBuilder.Sanitize("http://h:8080?x=/y&password=p"));
+        }
+
+        [Fact]
         public void LeavesOtherUrlsAlone()
         {
             Assert.Equal("http://h/panel/player_api.php", XtreamUrlBuilder.Sanitize("http://h/panel/player_api.php"));
@@ -164,6 +171,8 @@ namespace Emby.Xtream.Tests
         [InlineData("ftp://203.0.113.5/x.png", false)]
         [InlineData("not a url", false)]
         [InlineData("http://user:pw@203.0.113.5/x.png", false)]
+        [InlineData("http://[fd00:ec2::254]/x.png", false)]
+        [InlineData("http://100.100.100.200/x.png", false)]
         [InlineData("http://203.0.113.5/x.png", true)]
         [InlineData("https://192.168.1.20/x.png", true)]
         [InlineData("http://[2001:db8::1]/x.png", true)]

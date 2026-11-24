@@ -115,7 +115,9 @@ namespace Emby.Xtream.Xtream
             // path style: /{live|timeshift|movie|series}/USER/PASS/...
             int schemeEnd = result.IndexOf("://", StringComparison.Ordinal);
             int pathStart = result.IndexOf('/', schemeEnd < 0 ? 0 : schemeEnd + 3);
-            if (pathStart >= 0)
+            int qm0 = result.IndexOf('?');
+            // a '/' that only occurs in the query is not a path
+            if (pathStart >= 0 && (qm0 < 0 || qm0 > pathStart))
             {
                 int qm = result.IndexOf('?');
                 string path = qm >= 0 ? result.Substring(pathStart, qm - pathStart) : result.Substring(pathStart);

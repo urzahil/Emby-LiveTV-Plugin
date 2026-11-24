@@ -217,16 +217,17 @@ namespace Emby.Xtream.Api
                     response.Dispose();
                 }
                 windowStart = range.From;
-                Windows.Add(token, windowStart, window);
 
                 if (window.Length < windowLast - range.From + 1)
                 {
-                    // the provider's file ends before the length it advertised: serve what exists, and remember the real length
-                    length = range.From + window.Length;
-                    entry.SeekableLength = length;
-                    CatchupStreamRegistry.SetLayout(token, shift, length);
+                    // the provider's body ended early (a dropped connection, or a file shorter than advertised). Serve what
+                    // arrived, but neither cache it nor remember a shorter length: a later request may get the rest.
                     if (window.Length == 0) return Result(new MemoryStream(new byte[0]), null, 416, null, "bytes */" + length.ToString(CultureInfo.InvariantCulture));
-                    last = length - 1;
+                    last = range.From + window.Length - 1;
+                }
+                else
+                {
+                    Windows.Add(token, windowStart, window);
                 }
             }
 

@@ -21,6 +21,8 @@ namespace Emby.Xtream.Catchup
         private const int MaxLogoBytes = 5 * 1024 * 1024;
         public const int MaxParallelDownloads = 6;
         private static readonly TimeSpan RetryAfterFailure = TimeSpan.FromMinutes(10);
+        // the HTTP client's timeout covers the response headers; this covers reading the body
+        private static readonly TimeSpan DownloadTimeout = TimeSpan.FromSeconds(30);
 
         private const string Keep = "keep", Drop = "drop", Padded = "padded";
 
@@ -33,6 +35,7 @@ namespace Emby.Xtream.Catchup
         private readonly Dictionary<string, Task<string>> _inFlight = new Dictionary<string, Task<string>>(StringComparer.Ordinal);
         private readonly Dictionary<string, DateTime> _failedAt = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         private bool _manifestLoaded;
+        private bool _dirty;
 
         public CatchupLogoCache(string directory, Func<DateTime> utcNow = null)
         {
@@ -146,7 +149,12 @@ namespace Emby.Xtream.Catchup
             }
             finally
             {
-                lock (_lock) _inFlight.Remove(logoUrl);
+                lock (_lock)
+                {
+                    _inFlight.Remove(logoUrl);
+                    // one write per batch of downloads rather than one per logo
+                    if (_inFlight.Count == 0 && _dirty) SaveManifest();
+                }
             }
         }
 
@@ -160,7 +168,7 @@ namespace Emby.Xtream.Catchup
             {
                 EnsureManifest();
                 _verdicts[ShortHash.Of(logoUrl)] = verdict;
-                SaveManifest();
+                _dirty = true;
             }
         }
 
@@ -190,6 +198,7 @@ namespace Emby.Xtream.Catchup
         // caller holds _lock; the keys are hex and the values fixed words, so no escaping is needed
         private void SaveManifest()
         {
+            _dirty = false;
             try
             {
                 Directory.CreateDirectory(_directory);
@@ -215,25 +224,31 @@ namespace Emby.Xtream.Catchup
 
         private static async Task<byte[]> DownloadAsync(string url, IXtreamHttp http, CancellationToken ct)
         {
-            try
+            // a server that trickles the body must not hold a download slot for ever
+            using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                using (var stream = await http.GetStreamAsync(url, ct).ConfigureAwait(false))
-                using (var buffer = new MemoryStream())
+                timeout.CancelAfter(DownloadTimeout);
+                try
                 {
-                    var chunk = new byte[81920];
-                    int n;
-                    while ((n = await stream.ReadAsync(chunk, 0, chunk.Length, ct).ConfigureAwait(false)) > 0)
+                    using (var stream = await http.GetStreamAsync(url, timeout.Token).ConfigureAwait(false))
+                    using (var buffer = new MemoryStream())
                     {
-                        buffer.Write(chunk, 0, n);
-                        if (buffer.Length > MaxLogoBytes) return null;
+                        var chunk = new byte[81920];
+                        int n;
+                        while ((n = await stream.ReadAsync(chunk, 0, chunk.Length, timeout.Token).ConfigureAwait(false)) > 0)
+                        {
+                            buffer.Write(chunk, 0, n);
+                            if (buffer.Length > MaxLogoBytes) return null;
+                        }
+                        return buffer.ToArray();
                     }
-                    return buffer.ToArray();
                 }
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception)
-            {
-                return null;
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception)
+                {
+                    // includes our own timeout and cancellations raised by the HTTP stack: a failed download, retried later
+                    return null;
+                }
             }
         }
     }
