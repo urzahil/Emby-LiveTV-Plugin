@@ -28,12 +28,48 @@ namespace Emby.Xtream.Xtream.Json
             return p.ParseDocument();
         }
 
-        public static object Parse(Stream stream)
+        /// <summary>Largest response body <see cref="Parse(Stream)"/> reads; a URL that points at an endless stream must fail, not fill the memory.</summary>
+        public const long MaxStreamBytes = 64L * 1024 * 1024;
+
+        public static object Parse(Stream stream) => Parse(stream, MaxStreamBytes);
+
+        public static object Parse(Stream stream, long maxBytes)
         {
-            using (var reader = new StreamReader(stream, new UTF8Encoding(false), true, 8192, true))
+            using (var limited = new LimitedStream(stream, maxBytes))
+            using (var reader = new StreamReader(limited, new UTF8Encoding(false), true, 8192, true))
             {
                 return Parse(reader.ReadToEnd());
             }
+        }
+
+        /// <summary>Read-only wrapper that throws once more than a given number of bytes has been read.</summary>
+        private sealed class LimitedStream : Stream
+        {
+            private readonly Stream _inner;
+            private readonly long _max;
+            private long _read;
+
+            public LimitedStream(Stream inner, long max) { _inner = inner; _max = max; }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                int n = _inner.Read(buffer, offset, count);
+                _read += n;
+                if (_read > _max) throw new JsonLiteException("The response is larger than " + (_max / (1024 * 1024)) + " MB; this is not a JSON API response.");
+                return n;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            // the inner stream belongs to the caller
+            protected override void Dispose(bool disposing) { base.Dispose(disposing); }
         }
 
         public static bool TryParse(string json, out object value)

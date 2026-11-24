@@ -2,7 +2,7 @@
 
 [![build](https://github.com/urzahil/Emby-LiveTV-Plugin/actions/workflows/build.yml/badge.svg)](https://github.com/urzahil/Emby-LiveTV-Plugin/actions/workflows/build.yml)
 ![Emby 4.8+](https://img.shields.io/badge/Emby-4.8%2B-52b54b)
-![version](https://img.shields.io/badge/version-1.0.0-blue)
+[![release](https://img.shields.io/github/v/release/urzahil/Emby-LiveTV-Plugin?include_prereleases)](https://github.com/urzahil/Emby-LiveTV-Plugin/releases)
 ![license GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-lightgrey)
 
 Watch IPTV in Emby. This plugin adds an **Xtream Codes** provider as a native
@@ -84,13 +84,13 @@ default `streaming/timeshift.php` URL, switch the source to the alternative `tim
 |---|---|---|
 | Guide cache (hours) | 6 | How long downloaded guide data is reused before fetching again |
 | Guide days | 3 | How many days ahead to keep from the provider's guide |
-| Enable catch-up channel | on | Shows or hides the *IPTV Catch-up* channel |
+| Enable catch-up channel | on | Shows or hides the *Catch-up* channel |
 | Maximum catch-up days | 7 | Upper limit on how far back catch-up folders go |
 | HTTP timeout (seconds) | 60 | Timeout for provider requests |
 
 ## Limitations
 
-- No catch-up from the guide grid (Emby has no API for it) — use the *IPTV Catch-up* channel.
+- No catch-up from the guide grid (Emby has no API for it) — use the *Catch-up* channel.
 - Live TV only; the VOD and series parts of the Xtream API are not imported.
 - Catch-up quality depends on the provider: archive length, `has_archive` flags and timeshift URL styles vary.
 - Live and catch-up streams both count against your provider's connection limit.
@@ -106,7 +106,7 @@ default `streaming/timeshift.php` URL, switch the source to the alternative `tim
   (the default is `VLC/3.0.21 LibVLC/3.0.21`).
 - **Guide is empty** — check that *Import guide data* is on and that the provider's `xmltv.php` is not empty; the
   *Provider API* source is a fallback.
-- **IPTV Catch-up is empty** — wait a few minutes after adding the source, or run *Scheduled Tasks → Internet
+- **Catch-up is empty** — wait a few minutes after adding the source, or run *Scheduled Tasks → Internet
   Channels → Refresh Internet Channels* to fill it now. Only channels the provider marks with `tv_archive` are listed,
   and only from the categories ticked on the source page. If it stays empty, search `embyserver.txt` for
   `Catch-up listing failed`.

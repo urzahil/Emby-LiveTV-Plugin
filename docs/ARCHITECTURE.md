@@ -54,11 +54,9 @@ protected void SetCustomOptions<T>(TunerHostInfo info, T options);
 * HTML page root: `<div is="emby-scroller" class="view ..." data-controller="__plugin/xtreamtunerjs" data-title="...">`; the JS is an AMD module: `define(['baseView','globalize','loading','appRouter','formHelper','emby-input','emby-button','emby-checkbox','emby-select'], function (BaseView, ...) { ... return View; })`.
 * Strings: `IHasTranslations` with embedded `Emby.Xtream.strings.en-US.json`; `${Key}` placeholders in HTML are translated by Emby.
 
-A decompiled copy of Emby's bundled M3U tuner plugin (the closest reference)
-and its setup page is available during development at
-`/tmp/claude-0/-home-user/fc78b71b-fb1e-53f7-b8aa-5c97a2139965/scratchpad/decomp/m3u/`
-(do not copy it into this repository — it is Emby's proprietary code; use it only
-to confirm API usage).
+A decompiled copy of Emby's bundled M3U tuner plugin (the closest reference) and its setup page was used
+during development to confirm API usage. It is Emby's proprietary code and is not part of this repository;
+do not add it.
 
 ---
 
@@ -154,7 +152,7 @@ beyond the Emby SDK — the plugin is distributed as a single `Emby.Xtream.dll`.
 
 ## 5. Catch-up channel
 
-`XtreamCatchupChannel` — `Name = "IPTV Catch-up"`, `Description`, `ParentalRating = GeneralAudience`, `GetSupportedChannelImages = [Primary, Thumb]` (serve `thumb.png`).
+`XtreamCatchupChannel` — `Name = "Catch-up"`, `Description`, `ParentalRating = GeneralAudience`, `GetSupportedChannelImages = [Primary, Thumb]` (serve `thumb.png`).
 Visible only when `PluginConfiguration.EnableCatchupChannel` (default true) and at least one xtream tuner has `EnableCatchup`; otherwise `GetChannelItems` returns an empty result. Tuner hosts are read via `ILiveTvManager.GetTunerHostInfos("xtream")`.
 
 Folder tree (`InternalChannelItemQuery.FolderId`, ids built by `CatchupItemId`):
@@ -175,7 +173,7 @@ leaf  ...|p|{startTs}|{stopTs}|{urlsafe-title}  -> ChannelItemInfo{Type=Media, M
 * **Emby 4.8 never calls `GetChannelItems` while a user browses.** `ChannelManager.RefreshChannel` walks the whole tree (up to 6 levels) and stores it as library items; browsing and the home-screen *Latest* row read those items. The walk runs from the *Refresh Internet Channels* task (every 12 h, plus once at startup only when the set of installed channels changed — i.e. normally before the user has added a source) or when an `IHasChangeEvent.ContentChanged` is raised. The channel therefore raises `ContentChanged` 2 min after startup, 30 s after a `livetv` named-configuration or plugin-configuration save (debounced, caches cleared), and hourly. `IHasCacheKey` / `InternalChannelFeatures.AutoRefreshLevels` from older SDKs do not exist in 4.8 (`ChannelFeatures` only has `ShowRootFoldersAtTopLevel` and `LibraryOptions`).
 * Items missing from a `GetChannelItems` result are **deleted** from the library, so a provider error must throw (Emby logs it and keeps the stored items) rather than return an empty list. Empty is only returned when catch-up is disabled or no source has it enabled.
 * A refresh only rewrites an item Emby already stored when `ChannelItemInfo.ForceUpdate` is set or `DateModified` is later than the stored value; otherwise the stored name stays, whatever `GetChannelItems` now returns. Day folders are therefore named by date, never "Today"/"Yesterday" (each day's folder first appears on that day and would keep "Today" for good). They carry `DateModified = CatchupPlanner.DayLabelsRevised` so folders stored under an older label are renamed once; raise that value whenever the label format changes.
-* Catch-up pictures go through `CatchupLogoCache` / `LogoPadder`. The Emby Android TV app blurs an item's picture with RenderScript for the detail-screen background, and on a Google TV Streamer that crashes the app natively (`rsdAllocationGenerateMipmaps`, SIGSEGV) for very wide images such as a 512×77 banner logo. Each channel logo is downloaded once. PNGs wider than 16:9 or taller than 1:2 are padded with transparent pixels to that limit and saved under `CachePath/xtream/catchup-logos/`. `ChannelItemInfo.ImageUrl` then holds that local path, which Emby serves directly because it has no `://`. Other logos keep their URL. A JPEG outside the limits, or a PNG that cannot be decoded, gives the item no picture. Emby only sets a picture on items that have none, so items stored with the raw logo keep it until they are recreated.
+* Catch-up pictures go through `CatchupLogoCache` / `LogoPadder`. The Emby Android TV app blurs an item's picture with RenderScript for the detail-screen background, and on a Google TV Streamer that crashes the app natively (`rsdAllocationGenerateMipmaps`, SIGSEGV) for very wide images such as a 512×77 banner logo. Each channel logo is downloaded once (a few at a time, 10 s timeout, once per URL even when several channels share it); the verdict per URL (`keep`/`drop`/`padded`) is stored in `catchup-logos/verdicts.json`, so a restart does not fetch them again. Only http(s) URLs are fetched, and not ones that point at loopback/link-local addresses (`LogoUrlPolicy`), because `stream_icon` comes from the panel. PNGs wider than 16:9 or taller than 1:2 are padded with transparent pixels to that limit and saved under `CachePath/xtream/catchup-logos/`. `ChannelItemInfo.ImageUrl` then holds that local path, which Emby serves directly because it has no `://`. Other logos keep their URL. A JPEG outside the limits, or a PNG that cannot be decoded, gives the item no picture. Emby only sets a picture on items that have none, so items stored with the raw logo keep it until they are recreated.
 * Programmes set `DateCreated` = programme end, because *Latest* sorts channel items by `DateCreated` descending.
 * EPG tables are cached in memory for 30 minutes per stream; the walk is depth-first, so one hourly refresh costs one `get_simple_data_table` request per archive channel.
 * Credentials never appear in item ids (they only hold tuner id / stream id / timestamps) nor in the media source path Emby stores, logs and passes to ffprobe/ffmpeg.

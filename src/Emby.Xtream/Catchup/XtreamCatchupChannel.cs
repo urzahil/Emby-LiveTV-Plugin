@@ -38,13 +38,14 @@ namespace Emby.Xtream.Catchup
     /// programmes appear. Stored items are not renamed on a refresh, so folder names must not depend on the current date.
     /// </para>
     /// </summary>
-    public class XtreamCatchupChannel : IChannel, IRequiresMediaInfoCallback, IHasChangeEvent
+    public class XtreamCatchupChannel : IChannel, IRequiresMediaInfoCallback, IHasChangeEvent, IDisposable
     {
         private sealed class Catalog
         {
             public DateTime LoadedUtc;
             public List<XtreamLiveStream> Streams;
             public XtreamClock Clock;
+            public XtreamServerInfo ServerInfo;
         }
 
         private static readonly TimeSpan CatalogTtl = TimeSpan.FromMinutes(10);
@@ -52,6 +53,8 @@ namespace Emby.Xtream.Catchup
         private static readonly TimeSpan StartupRefreshDelay = TimeSpan.FromMinutes(2);
         private static readonly TimeSpan ConfigRefreshDelay = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan PeriodicRefresh = TimeSpan.FromHours(1);
+        // a logo that does not answer quickly is not worth holding up the channel listing for
+        private const int LogoTimeoutSeconds = 10;
 
         private readonly ILiveTvManager _liveTv;
         private readonly IHttpClient _http;
@@ -62,21 +65,33 @@ namespace Emby.Xtream.Catchup
         private readonly SemaphoreSlim _catalogGate = new SemaphoreSlim(1, 1);
         private readonly Timer _refreshTimer;
         private readonly IServerApplicationHost _appHost;
+        private readonly IServerConfigurationManager _configurationManager;
         private readonly CatchupLogoCache _logos;
+        private int _disposed;
 
         public XtreamCatchupChannel(ILiveTvManager liveTvManager, IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogManager logManager,
             IServerConfigurationManager configurationManager, IServerApplicationHost appHost)
         {
             _liveTv = liveTvManager;
             _appHost = appHost;
+            _configurationManager = configurationManager;
             _logos = new CatchupLogoCache(System.IO.Path.Combine(configurationManager.ApplicationPaths.CachePath, "xtream", "catchup-logos"));
             _http = httpClient;
             _json = jsonSerializer;
             _logger = logManager.GetLogger("XtreamCatchup");
 
-            _refreshTimer = new Timer(_ => RaiseContentChanged(), null, StartupRefreshDelay, PeriodicRefresh);
+            _refreshTimer = new Timer(_ => { if (_disposed == 0) RaiseContentChanged(); }, null, StartupRefreshDelay, PeriodicRefresh);
             configurationManager.NamedConfigurationUpdated += OnNamedConfigurationUpdated;
             Plugin.ConfigurationSaved += OnPluginConfigurationSaved;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _configurationManager.NamedConfigurationUpdated -= OnNamedConfigurationUpdated;
+            Plugin.ConfigurationSaved -= OnPluginConfigurationSaved;
+            _refreshTimer.Dispose();
+            _catalogGate.Dispose();
         }
 
         /// <summary>Tells Emby to re-read the channel tree into its library.</summary>
@@ -93,9 +108,11 @@ namespace Emby.Xtream.Catchup
         /// <summary>Debounced: saving a source usually fires several updates in a row.</summary>
         private void ScheduleRefresh()
         {
+            if (_disposed != 0) return;
             lock (_catalogs) _catalogs.Clear();
             _epg.Clear();
-            _refreshTimer.Change(ConfigRefreshDelay, PeriodicRefresh);
+            try { _refreshTimer.Change(ConfigRefreshDelay, PeriodicRefresh); }
+            catch (ObjectDisposedException) { /* disposed meanwhile */ }
         }
 
         private void RaiseContentChanged()
@@ -203,13 +220,17 @@ namespace Emby.Xtream.Catchup
                 .OrderBy(s => s.Num).ThenBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
 
+            // the logo cache downloads a few at a time and once per URL, so asking for all of them at once is fine
+            string[] logos = await Task.WhenAll(streams.Select(s => Logo(tuner, s, ct))).ConfigureAwait(false);
+
             var result = new List<ChannelItemInfo>(streams.Count);
-            foreach (var s in streams)
+            for (int i = 0; i < streams.Count; i++)
             {
+                var s = streams[i];
                 int days = CatchupPlanner.EffectiveDays(s.TvArchiveDuration, maxDays);
                 var item = Folder(CatchupItemId.ForChannel(tuner.Id, s.CategoryId ?? string.Empty, s.StreamId).ToString(), s.Name,
                     days.ToString(CultureInfo.InvariantCulture) + (days == 1 ? " day" : " days") + " of catch-up");
-                item.ImageUrl = await Logo(tuner, s, ct).ConfigureAwait(false);
+                item.ImageUrl = logos[i];
                 result.Add(item);
             }
             return result;
@@ -249,7 +270,7 @@ namespace Emby.Xtream.Catchup
             var client = XtreamTunerSupport.CreateClient(_http, tuner, options);
 
             var entries = await _epg.GetAsync(tuner.Id + "|" + id.StreamId, EpgTtl,
-                () => client.GetSimpleDataTableAsync(id.StreamId, null, ct), ct).ConfigureAwait(false);
+                () => client.GetSimpleDataTableAsync(id.StreamId, catalog.ServerInfo, ct), ct).ConfigureAwait(false);
 
             string logo = await Logo(tuner, stream, ct).ConfigureAwait(false);
             var programmes = CatchupPlanner.ArchivedProgrammes(entries, catalog.Clock, day, DateTime.UtcNow, days);
@@ -339,7 +360,7 @@ namespace Emby.Xtream.Catchup
         /// <summary>The channel logo as a catch-up picture: padded when its shape would crash the Android TV app (CatchupLogoCache).</summary>
         private Task<string> Logo(TunerHostInfo tuner, XtreamLiveStream stream, CancellationToken ct) =>
             _logos.ResolveAsync(stream.StreamIcon,
-                new EmbyHttp(_http, XtreamTunerSupport.GetUserAgent(tuner), XtreamTunerSupport.PluginConfig.HttpTimeoutSeconds), ct);
+                new EmbyHttp(_http, XtreamTunerSupport.GetUserAgent(tuner), Math.Min(LogoTimeoutSeconds, XtreamTunerSupport.PluginConfig.HttpTimeoutSeconds)), ct);
 
         private static int MaxDays(XtreamTunerOptions options) =>
             options.CatchupMaxDays > 0 ? options.CatchupMaxDays : XtreamTunerSupport.PluginConfig.CatchupMaxDays;
@@ -370,7 +391,8 @@ namespace Emby.Xtream.Catchup
                 {
                     LoadedUtc = DateTime.UtcNow,
                     Streams = streams,
-                    Clock = XtreamClock.FromServerInfo(account.ServerInfo)
+                    Clock = XtreamClock.FromServerInfo(account.ServerInfo),
+                    ServerInfo = account.ServerInfo
                 };
                 lock (_catalogs) _catalogs[tuner.Id] = catalog;
                 return catalog;

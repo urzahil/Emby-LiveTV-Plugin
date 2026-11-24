@@ -7,6 +7,7 @@ namespace Emby.Xtream.Catchup
     /// setup headers (H.264 SPS, HEVC SPS), with a PMT in between. Provider timeshift streams start at an arbitrary byte,
     /// and some only repeat those headers every several seconds; ffmpeg gives up after reading 5 MB without them
     /// ("unspecified size", "dimensions not set") and Emby cannot raise that limit.
+    /// <para>A stream starts at an arbitrary byte, so the packet boundary is found by requiring three 0x47 bytes a packet apart (a lone 0x47 is common in payloads).</para>
     /// <para>The stream is served from that offset unchanged, so a byte position in the served stream is always the same
     /// provider position minus the offset, and byte-range seeking can be passed through to the provider.</para>
     /// <para>For streams without H.264/HEVC video the offset is the first PAT; when nothing suitable turns up within
@@ -23,6 +24,13 @@ namespace Emby.Xtream.Catchup
         private int _packetCount;
         private long _packetStart;
         private long _position;
+
+        // sync probe: the first bytes after a start or a lost sync, until three packet boundaries line up
+        private const int SyncProbeBytes = 3 * PacketSize;
+        private readonly byte[] _pre = new byte[SyncProbeBytes];
+        private int _preCount;
+        private long _preStart;
+        private bool _locked;
 
         private int _pmtPid = -1;
         private int _videoPid = -1;
@@ -51,21 +59,47 @@ namespace Emby.Xtream.Catchup
         /// <summary>Feeds the next bytes of the stream (from position 0, in order).</summary>
         public void Write(byte[] buffer, int offset, int count)
         {
-            int end = offset + count;
+            Feed(buffer, offset, offset + count);
+        }
+
+        /// <summary>Call at end of input.</summary>
+        public void Complete()
+        {
+            // a stream shorter than the sync probe can only be checked with the bytes there are
+            if (!IsDone && !_locked && _preCount > 0) TrySync(true);
+            if (!IsDone) Finish(0, "end");
+        }
+
+        private void Feed(byte[] buffer, int offset, int end)
+        {
             while (offset < end && !IsDone)
             {
+                if (!_locked)
+                {
+                    // a stream starts at an arbitrary byte and 0x47 also occurs in payloads, so sync is only trusted once
+                    // three bytes in a row, a packet apart, are 0x47
+                    if (_preCount == 0) _preStart = _position;
+                    int take = Math.Min(SyncProbeBytes - _preCount, end - offset);
+                    Buffer.BlockCopy(buffer, offset, _pre, _preCount, take);
+                    _preCount += take;
+                    offset += take;
+                    _position += take;
+                    if (_preCount == SyncProbeBytes) TrySync(false);
+                    continue;
+                }
                 if (_packetCount == 0 && buffer[offset] != Sync)
                 {
-                    offset++;
-                    _position++;
+                    // lost sync (a stream with a gap or garbage): look for it again from here
+                    _locked = false;
+                    _preCount = 0;
                     continue;
                 }
                 if (_packetCount == 0) _packetStart = _position;
-                int take = Math.Min(PacketSize - _packetCount, end - offset);
-                Buffer.BlockCopy(buffer, offset, _packet, _packetCount, take);
-                _packetCount += take;
-                offset += take;
-                _position += take;
+                int n = Math.Min(PacketSize - _packetCount, end - offset);
+                Buffer.BlockCopy(buffer, offset, _packet, _packetCount, n);
+                _packetCount += n;
+                offset += n;
+                _position += n;
                 if (_packetCount < PacketSize) break;
 
                 _packetCount = 0;
@@ -74,10 +108,40 @@ namespace Emby.Xtream.Catchup
             }
         }
 
-        /// <summary>Call at end of input.</summary>
-        public void Complete()
+        /// <summary>Looks for the packet boundary in the probe buffer; on success feeds the buffered bytes from there.</summary>
+        private void TrySync(bool atEnd)
         {
-            if (!IsDone) Finish(0, "end");
+            int found = -1;
+            int limit = Math.Min(PacketSize, _preCount);
+            for (int i = 0; i < limit && found < 0; i++)
+            {
+                bool ok = true;
+                for (int k = 0; k < 3 && ok; k++)
+                {
+                    int at = i + k * PacketSize;
+                    if (at >= _preCount) { ok = atEnd; break; }
+                    ok = _pre[at] == Sync;
+                }
+                if (ok) found = i;
+            }
+
+            if (found < 0)
+            {
+                if (atEnd) return;
+                // no boundary in the first packet's worth of bytes: drop them and probe the next ones
+                Buffer.BlockCopy(_pre, PacketSize, _pre, 0, _preCount - PacketSize);
+                _preCount -= PacketSize;
+                _preStart += PacketSize;
+                if (_position > _maxScanBytes) Finish(0, "limit");
+                return;
+            }
+
+            var rest = new byte[_preCount - found];
+            Buffer.BlockCopy(_pre, found, rest, 0, rest.Length);
+            _position = _preStart + found;
+            _preCount = 0;
+            _locked = true;
+            Feed(rest, 0, rest.Length);
         }
 
         private void Finish(long offset, string reason)

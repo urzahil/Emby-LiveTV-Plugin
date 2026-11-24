@@ -12,6 +12,8 @@ define(['baseView', 'loading', 'formHelper', 'emby-input', 'emby-button', 'emby-
             view.querySelector('.txtCatchupMaxDays').value = config.CatchupMaxDays;
             view.querySelector('.txtHttpTimeout').value = config.HttpTimeoutSeconds;
             loading.hide();
+        }, function () {
+            loading.hide();
         });
     }
 
@@ -27,7 +29,11 @@ define(['baseView', 'loading', 'formHelper', 'emby-input', 'emby-button', 'emby-
             ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
                 loading.hide();
                 formHelper.handleConfigurationSavedResponse();
+            }, function () {
+                loading.hide();
             });
+        }, function () {
+            loading.hide();
         });
     }
 

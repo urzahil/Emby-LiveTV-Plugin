@@ -11,7 +11,7 @@ namespace Emby.Xtream.Configuration
         /// <summary>Upper limit of days offered in the catch-up channel (also limited by the provider's tv_archive_duration).</summary>
         public int CatchupMaxDays { get; set; } = 7;
 
-        /// <summary>Show the "IPTV Catch-up" channel at all.</summary>
+        /// <summary>Show the "Catch-up" channel at all.</summary>
         public bool EnableCatchupChannel { get; set; } = true;
 
         /// <summary>Timeout for requests to the provider.</summary>

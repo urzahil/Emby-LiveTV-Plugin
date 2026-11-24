@@ -43,10 +43,9 @@ namespace Emby.Xtream.Api
         public int ActiveConnections { get; set; }
         public string ServerTimezone { get; set; }
         public string[] AllowedOutputFormats { get; set; }
-        /// <summary>Normalised server URL (a pasted get.php link is split into URL + credentials).</summary>
+        /// <summary>Normalised server URL (a pasted get.php link is split into URL + credentials). The password is never echoed back.</summary>
         public string Url { get; set; }
         public string Username { get; set; }
-        public string Password { get; set; }
     }
 
     public class XtreamCategoryDto
@@ -70,7 +69,7 @@ namespace Emby.Xtream.Api
         public async Task<object> Post(TestXtream request)
         {
             XtreamCredentials creds = ResolveCredentials(request.Url, request.Username, request.Password);
-            var result = new TestXtreamResult { Url = creds.BaseUrl, Username = creds.Username, Password = creds.Password };
+            var result = new TestXtreamResult { Url = creds.BaseUrl, Username = creds.Username };
 
             if (!creds.IsComplete)
             {
